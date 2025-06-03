@@ -1,0 +1,10 @@
+[package]
+name = "interceptor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rdev = { version = "0.5", features = ["unstable_grab"] }
+iced = { version = "0.13", features = ["smol"] }
+easy-ext = "1"
+smol = "2"
