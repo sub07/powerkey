@@ -1818,16 +1818,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "interceptor"
-version = "0.1.0"
-dependencies = [
- "easy-ext",
- "iced",
- "rdev",
- "smol 2.0.2",
-]
-
-[[package]]
 name = "io-lifetimes"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,6 +2651,16 @@ dependencies = [
  "rustix 1.0.7",
  "tracing",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "powerkey"
+version = "0.1.0"
+dependencies = [
+ "easy-ext",
+ "iced",
+ "rdev",
+ "smol 2.0.2",
 ]
 
 [[package]]
