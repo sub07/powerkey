@@ -1,18 +1,22 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 use iced::{
     futures::{
         SinkExt, Stream,
         channel::mpsc::{Receiver, Sender, channel},
+        select,
     },
     stream,
 };
 use rdev::{Event, EventType};
+use smol::Timer;
 
-enum ListenerMode {
+#[derive(Default, Clone, Debug)]
+pub enum ListenerMode {
+    #[default]
     Disabled,
     Listen,
-    Grab { simulated: VecDeque<EventType> },
+    Grab,
 }
 
 struct GlobalEventListener {
@@ -22,10 +26,7 @@ struct GlobalEventListener {
 
 #[derive(Debug)]
 pub enum ListenerCommand {
-    SetDisabledMode,
-    SetListenMode,
-    SetGrabMode,
-    AddSimulatedInput(EventType),
+    SetMode(ListenerMode),
 }
 
 impl GlobalEventListener {
@@ -46,71 +47,27 @@ impl GlobalEventListener {
         message_sender: &smol::channel::Sender<Message>,
     ) {
         match command {
-            ListenerCommand::SetDisabledMode => {
-                self.mode = ListenerMode::Disabled;
-                message_sender
-                    .send_blocking(Message::DisabledModeSet)
-                    .unwrap();
-            }
-            ListenerCommand::SetListenMode => {
-                self.mode = ListenerMode::Listen;
-                message_sender
-                    .send_blocking(Message::ListenModeSet)
-                    .unwrap();
-            }
-            ListenerCommand::SetGrabMode => {
-                self.mode = ListenerMode::Grab {
-                    simulated: Default::default(),
-                };
-                message_sender.send_blocking(Message::GrabModeSet).unwrap();
-            }
-            ListenerCommand::AddSimulatedInput(simulated_event) => {
-                if let ListenerMode::Grab { simulated } = &mut self.mode {
-                    simulated.push_back(simulated_event);
-                } else {
-                    debug_assert!(false); // TODO: panic on debug, log on release
+            ListenerCommand::SetMode(mode) => match mode {
+                ListenerMode::Disabled => {
+                    self.mode = ListenerMode::Disabled;
+                    message_sender
+                        .send_blocking(Message::ModeJustSet(ListenerMode::Disabled))
+                        .unwrap();
                 }
-            }
+                ListenerMode::Listen => {
+                    self.mode = ListenerMode::Listen;
+                    message_sender
+                        .send_blocking(Message::ModeJustSet(ListenerMode::Listen))
+                        .unwrap();
+                }
+                ListenerMode::Grab => {
+                    self.mode = ListenerMode::Grab;
+                    message_sender
+                        .send_blocking(Message::ModeJustSet(ListenerMode::Grab))
+                        .unwrap();
+                }
+            },
         }
-    }
-
-    fn handle_grab(
-        &mut self,
-        event: Event,
-        message_sender: &smol::channel::Sender<Message>,
-    ) -> Option<Event> {
-        let ListenerMode::Grab { simulated } = &mut self.mode else {
-            debug_assert!(false, "handle_grab called without being in grab mode");
-            return Some(event);
-        };
-
-        // If event is on simulated queue don't grab it to allow it reach user apps
-        if let Some(front) = simulated.front() {
-            if front == &event.event_type {
-                simulated.pop_front();
-                return Some(event);
-            }
-        }
-
-        // If not simulated we grab it
-        match event.event_type {
-            EventType::KeyPress(_) | EventType::KeyRelease(_) => {
-                message_sender.send_blocking(Message::Event(event)).unwrap();
-                None
-            }
-            _ => Some(event),
-        }
-    }
-
-    fn handle_listen(
-        &mut self,
-        event: Event,
-        message_sender: &smol::channel::Sender<Message>,
-    ) -> Option<Event> {
-        message_sender
-            .send_blocking(Message::Event(event.clone()))
-            .unwrap();
-        Some(event)
     }
 
     fn on_event(
@@ -123,19 +80,41 @@ impl GlobalEventListener {
             self.handle_command(command, message_sender);
         }
 
+        // We don't care about mouse events
+        // Keep this after command pumping to allow mouse event to trigger it. Alternative would be to wake this callback on a regular basis if no event is shot
+        if let Event {
+            event_type:
+                EventType::Wheel { .. }
+                | EventType::MouseMove { .. }
+                | EventType::ButtonPress(_)
+                | EventType::ButtonRelease(_),
+            ..
+        } = event
+        {
+            return Some(event);
+        }
+
         match &mut self.mode {
             ListenerMode::Disabled => Some(event),
-            ListenerMode::Listen => self.handle_listen(event, message_sender),
-            ListenerMode::Grab { .. } => self.handle_grab(event, message_sender),
+            ListenerMode::Listen => {
+                message_sender
+                    .send_blocking(Message::Event(event.clone()))
+                    .unwrap();
+                Some(event)
+            }
+            ListenerMode::Grab => {
+                message_sender
+                    .send_blocking(Message::Event(event.clone()))
+                    .unwrap();
+                None
+            }
         }
     }
 }
 
 pub enum Message {
     Ready(Sender<ListenerCommand>),
-    DisabledModeSet,
-    ListenModeSet,
-    GrabModeSet,
+    ModeJustSet(ListenerMode),
     Event(rdev::Event),
 }
 
@@ -151,17 +130,7 @@ pub fn stream() -> impl Stream<Item = Message> {
 
         loop {
             let message = stream_rx.recv().await.unwrap();
-            match message {
-                Message::Event(Event {
-                    event_type:
-                        EventType::Wheel { .. }
-                        | EventType::MouseMove { .. }
-                        | EventType::ButtonPress(_)
-                        | EventType::ButtonRelease(_),
-                    ..
-                }) => {}
-                _ => output.send(message).await.unwrap(),
-            }
+            output.send(message).await.unwrap();
         }
     })
 }

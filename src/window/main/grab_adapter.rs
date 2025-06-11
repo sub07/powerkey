@@ -1,7 +1,4 @@
-use crate::{
-    subscription,
-    window::main::{GlobalEventListenerMode, Message},
-};
+use crate::{subscription, window::main::Message};
 
 impl From<subscription::global_event::Message> for Message {
     fn from(event: subscription::global_event::Message) -> Self {
@@ -10,14 +7,8 @@ impl From<subscription::global_event::Message> for Message {
                 Message::GlobalEventListenerCommandSender(sender)
             }
             subscription::global_event::Message::Event(event) => Message::GrabbedEvent(event),
-            subscription::global_event::Message::DisabledModeSet => {
-                Message::GlobalEventListenerModeChanged(GlobalEventListenerMode::Disabled)
-            }
-            subscription::global_event::Message::ListenModeSet => {
-                Message::GlobalEventListenerModeChanged(GlobalEventListenerMode::Listen)
-            }
-            subscription::global_event::Message::GrabModeSet => {
-                Message::GlobalEventListenerModeChanged(GlobalEventListenerMode::Grab)
+            subscription::global_event::Message::ModeJustSet(mode) => {
+                Message::GlobalEventListenerModeChanged(mode)
             }
         }
     }

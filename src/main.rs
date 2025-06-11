@@ -1,3 +1,4 @@
+mod custom_widget;
 mod subscription;
 mod utils;
 mod window;
@@ -8,6 +9,7 @@ fn main() {
         window::main::update,
         window::main::view,
     )
+    .theme(window::main::theme)
     .subscription(window::main::subscription)
     .run()
     .unwrap();

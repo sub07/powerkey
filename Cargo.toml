@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }
-iced = { version = "0.13", features = ["smol"] }
+iced = { version = "0.13", features = ["smol", "advanced"] }
 easy-ext = "1"
 smol = "2"
+itertools = "0"
