@@ -6,5 +6,15 @@
     "label": "run",
     "command": "cargo",
     "args": ["run"]
+  },
+  {
+    "label": "build",
+    "command": "cargo",
+    "args": ["build"]
+  },
+  {
+    "label": "check",
+    "command": "cargo",
+    "args": ["check"]
   }
 ]

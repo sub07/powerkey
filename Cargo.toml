@@ -9,3 +9,5 @@ iced = { version = "0.13", features = ["smol", "advanced"] }
 easy-ext = "1"
 smol = "2"
 itertools = "0"
+windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-strings = "0.4"

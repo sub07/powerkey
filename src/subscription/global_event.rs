@@ -1,15 +1,11 @@
-use std::{collections::VecDeque, time::Duration};
-
 use iced::{
     futures::{
         SinkExt, Stream,
         channel::mpsc::{Receiver, Sender, channel},
-        select,
     },
     stream,
 };
 use rdev::{Event, EventType};
-use smol::Timer;
 
 #[derive(Default, Clone, Debug)]
 pub enum ListenerMode {
