@@ -6,7 +6,7 @@ impl From<subscription::global_event::Message> for Message {
             subscription::global_event::Message::Ready(sender) => {
                 Message::GlobalEventListenerCommandSender(sender)
             }
-            subscription::global_event::Message::Event(event) => Message::GrabbedEvent(event),
+            subscription::global_event::Message::Event(event) => Message::GlobalEvent(event),
             subscription::global_event::Message::ModeJustSet(mode) => {
                 Message::GlobalEventListenerModeChanged(mode)
             }

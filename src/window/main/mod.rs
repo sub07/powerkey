@@ -28,14 +28,19 @@ enum PlaybackMode {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct PrintableEvent(rdev::Event);
+pub struct PrintableEvent(subscription::global_event::Event);
 
 impl Display for PrintableEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.event_type {
-            EventType::KeyPress(key) => write!(f, "Press {key:?}"),
-            EventType::KeyRelease(key) => write!(f, "Release {key:?}"),
-            _ => unreachable!("mouse event not supported"),
+        match &self.0 {
+            subscription::global_event::Event::Input(event) => match event.event_type {
+                EventType::KeyPress(key) => write!(f, "Press {key:?}"),
+                EventType::KeyRelease(key) => write!(f, "Release {key:?}"),
+                _ => unreachable!("mouse event not supported"),
+            },
+            subscription::global_event::Event::FocusChange { window_title, .. } => {
+                write!(f, "Focus changed to \"{window_title}\"")
+            }
         }
     }
 }
@@ -52,7 +57,7 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    GrabbedEvent(rdev::Event),
+    GlobalEvent(subscription::global_event::Event),
     GlobalEventListenerCommandSender(Sender<subscription::global_event::ListenerCommand>),
     GlobalEventListenerModeChanged(subscription::global_event::ListenerMode),
     RecordButtonPressed,
@@ -67,7 +72,7 @@ pub fn title(_state: &State) -> String {
 
 pub fn update(state: &mut State, message: Message) {
     match message {
-        Message::GrabbedEvent(event) => {
+        Message::GlobalEvent(event) => {
             if let (ListenerMode::Listen, PlaybackMode::Record) =
                 (&state.current_mode, &mut state.playback_mode)
             {
@@ -76,18 +81,6 @@ pub fn update(state: &mut State, message: Message) {
         }
         Message::GlobalEventListenerCommandSender(sender) => {
             state.global_event_listener_command_sender = Some(sender);
-            state.items = vec![
-                PrintableEvent(rdev::Event {
-                    event_type: EventType::KeyPress(Key::KeyA),
-                    name: None,
-                    time: SystemTime::now(),
-                }),
-                PrintableEvent(rdev::Event {
-                    event_type: EventType::KeyPress(Key::KeyA),
-                    name: None,
-                    time: SystemTime::now(),
-                }),
-            ]
         }
         Message::GlobalEventListenerModeChanged(new_mode) => state.current_mode = new_mode,
         Message::RecordButtonPressed => {
