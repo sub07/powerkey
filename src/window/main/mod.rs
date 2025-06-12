@@ -57,6 +57,16 @@ pub struct State {
     selected_item: Option<PrintableEvent>,
 }
 
+impl State {
+    fn index_of_selected_item(&self) -> Option<usize> {
+        self.items.iter().position(|event| {
+            self.selected_item
+                .clone()
+                .is_some_and(|selected_event| *event == selected_event)
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     GlobalEvent(subscription::global_event_listener::Event),
@@ -69,6 +79,8 @@ pub enum Message {
     PlayButtonPressed,
     StopButtonPressed,
     Delete,
+    Next,
+    Previous,
     OnItemPicked(PrintableEvent),
 }
 
@@ -142,13 +154,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.global_event_player_command_sender = Some(sender);
         }
         Message::Delete => {
-            let position = state.items.iter().position(|event| {
-                state
-                    .selected_item
-                    .clone()
-                    .is_some_and(|selected_event| *event == selected_event)
-            });
-            if let Some(position) = position {
+            if let Some(position) = state.index_of_selected_item() {
                 state.items.remove(position);
                 if state.items.is_empty() {
                     state.selected_item = None;
@@ -161,6 +167,20 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GlobalEventPlayerJustPlayed(event) => {
             state.selected_item = Some(PrintableEvent(event));
+        }
+        Message::Next => {
+            if let Some(index) = state.index_of_selected_item() {
+                let next_index = index + 1;
+                let next_index = next_index.clamp(0, state.items.len() - 1);
+                state.selected_item = Some(state.items[next_index].clone());
+            }
+        }
+        Message::Previous => {
+            if let Some(index) = state.index_of_selected_item() {
+                let next_index = index as i32 - 1;
+                let next_index = next_index.clamp(0, state.items.len() as i32 - 1);
+                state.selected_item = Some(state.items[next_index as usize].clone());
+            }
         }
     }
 
@@ -246,8 +266,10 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
 }
 
 fn on_key_press(key: Key, _modifiers: Modifiers) -> Option<Message> {
-    if key == Key::Named(Named::Delete) {
-        return Some(Message::Delete);
+    match key {
+        Key::Named(Named::Delete) => Some(Message::Delete),
+        Key::Named(Named::ArrowUp) => Some(Message::Previous),
+        Key::Named(Named::ArrowDown) => Some(Message::Next),
+        _ => None,
     }
-    None
 }
