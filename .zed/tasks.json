@@ -5,7 +5,10 @@
   {
     "label": "run",
     "command": "cargo",
-    "args": ["run"]
+    "args": ["run"],
+    "env": {
+      "RUST_LOG": "TRACE"
+    }
   },
   {
     "label": "build",

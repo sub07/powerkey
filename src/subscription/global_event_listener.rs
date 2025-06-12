@@ -20,12 +20,12 @@ pub enum ListenerMode {
 
 struct GlobalEventListener {
     mode: ListenerMode,
-    command_rx: Receiver<ListenerCommand>,
+    command_rx: Receiver<Command>,
     current_window_title: String,
 }
 
 #[derive(Debug)]
-pub enum ListenerCommand {
+pub enum Command {
     SetMode(ListenerMode),
 }
 
@@ -39,7 +39,7 @@ pub enum Event {
 }
 
 impl GlobalEventListener {
-    fn new() -> (Self, Sender<ListenerCommand>) {
+    fn new() -> (Self, Sender<Command>) {
         let (tx, rx) = channel(100);
         (
             Self {
@@ -54,11 +54,11 @@ impl GlobalEventListener {
 
     fn handle_command(
         &mut self,
-        command: ListenerCommand,
+        command: Command,
         message_sender: &smol::channel::Sender<Message>,
     ) {
         match command {
-            ListenerCommand::SetMode(mode) => match mode {
+            Command::SetMode(mode) => match mode {
                 ListenerMode::Disabled => {
                     self.mode = ListenerMode::Disabled;
                     message_sender
@@ -146,7 +146,7 @@ impl GlobalEventListener {
 }
 
 pub enum Message {
-    Ready(Sender<ListenerCommand>),
+    Ready(Sender<Command>),
     ModeJustSet(ListenerMode),
     Event(Event),
 }

@@ -11,3 +11,5 @@ smol = "2"
 itertools = "0"
 windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging"] }
 windows-strings = "0.4"
+log = "0"
+pretty_env_logger = "0"
