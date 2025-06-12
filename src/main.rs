@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 mod custom_widget;
 mod subscription;
 mod utils;
@@ -21,6 +23,6 @@ fn main() {
     )
     .theme(window::main::theme)
     .subscription(window::main::subscription)
-    .run()
+    .run_with(window::main::new)
     .unwrap();
 }

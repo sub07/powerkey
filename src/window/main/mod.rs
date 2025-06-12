@@ -5,10 +5,11 @@ use iced::{
     futures::channel::mpsc::Sender,
     keyboard::{Key, Modifiers, key::Named},
     widget::{
-        button, column, container, horizontal_space, mouse_area, row, scrollable,
-        scrollable::{AbsoluteOffset, Viewport},
+        self, button, checkbox, column, container, horizontal_space, mouse_area, row,
+        scrollable::{self, AbsoluteOffset, Viewport},
         text,
     },
+    window::Level,
 };
 use itertools::Itertools;
 use rdev::EventType;
@@ -20,6 +21,7 @@ use crate::{
         global_event_listener::{Command, ListenerMode},
     },
     utils::{SenderOption, SubscriptionExt},
+    window,
 };
 
 mod global_event_mapper;
@@ -65,21 +67,24 @@ pub struct State {
     selected_item_index: Option<usize>,
     item_list_scroll_viewport: Option<Viewport>,
     item_list_scroll_id: iced::widget::scrollable::Id,
+    window_id: Option<iced::window::Id>,
+    always_on_top: bool,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            global_event_listener_command_sender: Default::default(),
-            global_event_player_command_sender: Default::default(),
-            current_mode: Default::default(),
-            playback_mode: Default::default(),
-            items: Default::default(),
-            selected_item_index: Default::default(),
-            item_list_scroll_viewport: Default::default(),
-            item_list_scroll_id: iced::widget::scrollable::Id::unique(),
-        }
-    }
+pub fn new() -> (State, Task<Message>) {
+    let state = State {
+        global_event_listener_command_sender: Default::default(),
+        global_event_player_command_sender: Default::default(),
+        playback_mode: Default::default(),
+        current_mode: Default::default(),
+        items: Default::default(),
+        selected_item_index: Default::default(),
+        item_list_scroll_viewport: Default::default(),
+        item_list_scroll_id: iced::widget::scrollable::Id::unique(),
+        window_id: None,
+        always_on_top: false,
+    };
+    (state, Task::none())
 }
 
 impl State {
@@ -132,6 +137,8 @@ pub enum Message {
     Previous,
     OnItemClicked(usize),
     OnItemListScroll(Viewport),
+    ToggleAlwaysOnTop(bool),
+    WindowId(iced::window::Id),
 }
 
 pub fn title(_state: &State) -> String {
@@ -250,13 +257,31 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::OnItemListScroll(viewport) => {
             state.item_list_scroll_viewport = Some(viewport);
         }
+        Message::ToggleAlwaysOnTop(always_on_top) => {
+            if let Some(window_id) = state.window_id {
+                state.always_on_top = always_on_top;
+                return iced::window::change_level(
+                    window_id,
+                    if always_on_top {
+                        Level::AlwaysOnTop
+                    } else {
+                        Level::Normal
+                    },
+                );
+            } else {
+                return iced::window::get_oldest()
+                    .and_then(|id| Task::done(Message::WindowId(id)))
+                    .chain(Task::done(Message::ToggleAlwaysOnTop(always_on_top)));
+            }
+        }
+        Message::WindowId(id) => state.window_id = Some(id),
     }
 
     Task::none()
 }
 
 pub fn theme(_state: &State) -> iced::Theme {
-    Theme::Oxocarbon
+    Theme::TokyoNightLight
 }
 
 fn list_item<'a, 'b: 'a>(
@@ -278,7 +303,7 @@ fn list_item<'a, 'b: 'a>(
             }
         }))
         .width(Length::Fill)
-        .padding([8, 4])
+        .padding([4, 4])
         .style(move |theme: &iced::Theme| {
             if state
                 .selected_item_index
@@ -306,10 +331,13 @@ pub fn view(state: &State) -> Element<Message> {
 
     column![
         row![
-            text(format!("{:?}", state.current_mode)),
-            horizontal_space().width(Length::Fixed(6.0)),
-            text(format!("{:?}", state.playback_mode)),
+            column![
+                text(format!("{:?}", state.current_mode)),
+                text(format!("{:?}", state.playback_mode)),
+            ],
+            checkbox("Always on top", state.always_on_top).on_toggle(Message::ToggleAlwaysOnTop)
         ]
+        .spacing(8.0)
         .height(Length::Shrink),
         row![
             button(text!("Record")).on_press(Message::RecordButtonPressed),
@@ -321,8 +349,8 @@ pub fn view(state: &State) -> Element<Message> {
             Element::new(container(text("Press record !").size(24.0)).center(Length::Fill))
         } else {
             Element::new(
-                scrollable(items)
-                    .spacing(4.0)
+                widget::scrollable(items)
+                    .spacing(8.0)
                     .id(state.item_list_scroll_id.clone())
                     .on_scroll(Message::OnItemListScroll),
             )
