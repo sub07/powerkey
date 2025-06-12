@@ -317,11 +317,18 @@ pub fn view(state: &State) -> Element<Message> {
             button(text!("Stop")).on_press(Message::StopButtonPressed),
         ]
         .spacing(4.0),
-        scrollable(items)
-            .spacing(4.0)
-            .id(state.item_list_scroll_id.clone())
-            .on_scroll(Message::OnItemListScroll),
+        if state.items.is_empty() {
+            Element::new(container(text("Press record !").size(24.0)).center(Length::Fill))
+        } else {
+            Element::new(
+                scrollable(items)
+                    .spacing(4.0)
+                    .id(state.item_list_scroll_id.clone())
+                    .on_scroll(Message::OnItemListScroll),
+            )
+        },
     ]
+    .spacing(4.0)
     .into()
 }
 
