@@ -1,19 +1,6 @@
-use std::{ptr::null_mut, string::FromUtf16Error};
-
-use easy_ext::ext;
-use iced::Subscription;
-use itertools::Itertools;
-use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{
-        FindWindowW, GetForegroundWindow, GetWindowTextLengthA, GetWindowTextW, SetForegroundWindow,
-    },
-};
-use windows_strings::{HSTRING, PCWSTR};
-
-#[ext(SubscriptionExt)]
-impl<T> Subscription<T> {
-    pub fn map_into<O>(self) -> Subscription<O>
+#[easy_ext::ext(SubscriptionExt)]
+impl<T> iced::Subscription<T> {
+    pub fn map_into<O>(self) -> iced::Subscription<O>
     where
         O: From<T> + 'static,
         T: 'static,
@@ -28,7 +15,7 @@ pub enum SendError<T> {
     InnerError(iced::futures::channel::mpsc::TrySendError<T>),
 }
 
-#[ext(SenderOption)]
+#[easy_ext::ext(SenderOption)]
 impl<T> Option<iced::futures::channel::mpsc::Sender<T>> {
     pub fn try_send(&mut self, t: T) -> Result<(), SendError<T>> {
         if let Some(sender) = self {
@@ -39,20 +26,23 @@ impl<T> Option<iced::futures::channel::mpsc::Sender<T>> {
     }
 }
 
-pub fn get_focused_window_title() -> Result<String, FromUtf16Error> {
+pub fn get_focused_window_title() -> Result<String, std::string::FromUtf16Error> {
     unsafe {
-        let window = GetForegroundWindow();
-        let len = GetWindowTextLengthA(window) + 1; // + 1 for null terminator
+        let window = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextLengthA(window) + 1; // + 1 for null terminator
         let mut title = vec![0u16; len as usize];
-        GetWindowTextW(window, title.as_mut_slice());
+        windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(window, title.as_mut_slice());
         windows_strings::PWSTR::from_raw(title.as_mut_ptr()).to_string()
     }
 }
 
-pub fn set_focused_window_by_title(title: &str) {
+pub fn set_focused_window_by_title<S: AsRef<str>>(title: S) {
     unsafe {
-        if let Ok(window) = FindWindowW(PCWSTR::null(), &HSTRING::from(title)) {
-            SetForegroundWindow(window).unwrap();
+        if let Ok(window) = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows_strings::PCWSTR::null(),
+            &windows_strings::HSTRING::from(title.as_ref()),
+        ) {
+            windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(window).unwrap();
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use iced::{
     futures::{
@@ -30,12 +30,22 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    Input(rdev::Event),
-    FocusChange {
-        window_title: String,
-        time: SystemTime,
-    },
+pub struct Event {
+    pub time: SystemTime,
+    pub kind: EventKind,
+}
+
+impl Event {
+    pub fn new(time: SystemTime, kind: EventKind) -> Self {
+        Self { time, kind }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventKind {
+    Input(rdev::EventType),
+    FocusChange { window_title: String },
+    Delay(Duration),
 }
 
 impl GlobalEventListener {
@@ -105,10 +115,12 @@ impl GlobalEventListener {
             if current_window_title != self.current_window_title {
                 self.current_window_title = current_window_title.to_owned();
                 message_sender
-                    .send_blocking(Message::Event(Event::FocusChange {
-                        window_title: self.current_window_title.clone(),
-                        time: SystemTime::now(),
-                    }))
+                    .send_blocking(Message::Event(Event::new(
+                        SystemTime::now(),
+                        EventKind::FocusChange {
+                            window_title: self.current_window_title.clone(),
+                        },
+                    )))
                     .unwrap();
             }
         }
@@ -131,13 +143,19 @@ impl GlobalEventListener {
             ListenerMode::Disabled => Some(event),
             ListenerMode::Listen => {
                 message_sender
-                    .send_blocking(Message::Event(Event::Input(event.clone())))
+                    .send_blocking(Message::Event(Event::new(
+                        event.time,
+                        EventKind::Input(event.event_type),
+                    )))
                     .unwrap();
                 Some(event)
             }
             ListenerMode::Grab => {
                 message_sender
-                    .send_blocking(Message::Event(Event::Input(event.clone())))
+                    .send_blocking(Message::Event(Event::new(
+                        event.time,
+                        EventKind::Input(event.event_type),
+                    )))
                     .unwrap();
                 None
             }

@@ -10,7 +10,10 @@ use iced::{
 use log::{debug, error, info};
 use smol::{Timer, stream::StreamExt};
 
-use crate::{subscription::global_event_listener::Event, utils::set_focused_window_by_title};
+use crate::{
+    subscription::global_event_listener::{Event, EventKind},
+    utils::set_focused_window_by_title,
+};
 
 pub enum Message {
     SenderReady(Sender<Command>),
@@ -61,14 +64,18 @@ impl Player {
 
         let event = &self.events[*event_index];
 
-        match event {
-            Event::Input(event) => rdev::simulate(&event.event_type).unwrap(),
-            Event::FocusChange { window_title, .. } => {
+        match &event.kind {
+            EventKind::Input(event) => {
+                rdev::simulate(&event).unwrap();
+                Timer::after(Duration::from_millis(32)).await;
+            }
+            EventKind::FocusChange { window_title } => {
                 set_focused_window_by_title(window_title);
             }
+            EventKind::Delay(duration) => {
+                Timer::after(*duration).await;
+            }
         }
-
-        Timer::after(Duration::from_millis(100)).await;
 
         *event_index += 1;
 

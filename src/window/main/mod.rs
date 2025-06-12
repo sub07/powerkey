@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, time::SystemTime};
 
 use iced::{
     Element, Length, Subscription, Task, Theme,
@@ -33,14 +33,19 @@ pub struct PrintableEvent(subscription::global_event_listener::Event);
 
 impl Display for PrintableEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            subscription::global_event_listener::Event::Input(event) => match event.event_type {
+        match &self.0.kind {
+            subscription::global_event_listener::EventKind::Input(event) => match event {
                 EventType::KeyPress(key) => write!(f, "Press {key:?}"),
                 EventType::KeyRelease(key) => write!(f, "Release {key:?}"),
                 _ => unreachable!("mouse event not supported"),
             },
-            subscription::global_event_listener::Event::FocusChange { window_title, .. } => {
-                write!(f, "Focus changed to \"{window_title}\"")
+            subscription::global_event_listener::EventKind::FocusChange {
+                window_title, ..
+            } => {
+                write!(f, "Focus changed to window \"{window_title}\"")
+            }
+            subscription::global_event_listener::EventKind::Delay(duration) => {
+                write!(f, "{}ms delay", duration.as_millis())
             }
         }
     }
@@ -94,6 +99,16 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if let (ListenerMode::Listen, PlaybackMode::Record) =
                 (&state.current_mode, &mut state.playback_mode)
             {
+                if let Some(previous_event) = state.items.last() {
+                    if let Ok(delay) = event.time.duration_since(previous_event.0.time) {
+                        state.items.push(PrintableEvent(
+                            subscription::global_event_listener::Event::new(
+                                SystemTime::now(),
+                                subscription::global_event_listener::EventKind::Delay(delay),
+                            ),
+                        ));
+                    }
+                }
                 state.items.push(PrintableEvent(event));
             }
         }
