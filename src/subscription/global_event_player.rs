@@ -17,7 +17,7 @@ use crate::{
 
 pub enum Message {
     SenderReady(Sender<Command>),
-    JustPlayed(Event),
+    JustPlayed { index: usize },
     PlaybackDone,
 }
 
@@ -66,7 +66,7 @@ impl Player {
 
         match &event.kind {
             EventKind::Input(event) => {
-                rdev::simulate(&event).unwrap();
+                rdev::simulate(event).unwrap();
                 Timer::after(Duration::from_millis(32)).await;
             }
             EventKind::FocusChange { window_title } => {
@@ -79,7 +79,9 @@ impl Player {
 
         *event_index += 1;
 
-        Message::JustPlayed(event.clone())
+        Message::JustPlayed {
+            index: *event_index - 1,
+        }
     }
 
     fn stop_playback(&mut self) {

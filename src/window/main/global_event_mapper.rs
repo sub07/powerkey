@@ -25,8 +25,8 @@ impl From<subscription::global_event_player::Message> for Message {
             subscription::global_event_player::Message::SenderReady(sender) => {
                 Message::GlobalEventPlayerReady(sender)
             }
-            subscription::global_event_player::Message::JustPlayed(event) => {
-                Message::GlobalEventPlayerJustPlayed(event)
+            subscription::global_event_player::Message::JustPlayed { index } => {
+                Message::GlobalEventPlayerJustPlayed(index)
             }
         }
     }

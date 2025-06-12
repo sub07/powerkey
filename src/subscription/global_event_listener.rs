@@ -7,6 +7,7 @@ use iced::{
     },
     stream,
 };
+use log::info;
 
 use crate::utils::get_focused_window_title;
 
@@ -98,6 +99,7 @@ impl GlobalEventListener {
     ) -> Option<rdev::Event> {
         // Handle commands
         while let Ok(Some(command)) = self.command_rx.try_next() {
+            info!("Handle command {command:?} in global event listener");
             self.handle_command(command, message_sender);
         }
 
@@ -172,9 +174,9 @@ pub enum Message {
 pub fn stream() -> impl Stream<Item = Message> {
     stream::channel(100, async |mut output| {
         let (stream_tx, stream_rx) = smol::channel::unbounded::<Message>();
-        let (mut grabber, simulated_tx) = GlobalEventListener::new();
+        let (mut event_listener, simulated_tx) = GlobalEventListener::new();
         std::thread::spawn(move || {
-            rdev::_grab(move |event| grabber.on_event(event, &stream_tx)).unwrap()
+            rdev::_grab(move |event| event_listener.on_event(event, &stream_tx)).unwrap()
         });
 
         output.send(Message::Ready(simulated_tx)).await.unwrap();

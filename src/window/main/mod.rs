@@ -28,7 +28,7 @@ enum PlaybackMode {
     Record,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct PrintableEvent(subscription::global_event_listener::Event);
 
 impl Display for PrintableEvent {
@@ -59,17 +59,7 @@ pub struct State {
     current_mode: subscription::global_event_listener::ListenerMode,
     playback_mode: PlaybackMode,
     items: Vec<PrintableEvent>,
-    selected_item: Option<PrintableEvent>,
-}
-
-impl State {
-    fn index_of_selected_item(&self) -> Option<usize> {
-        self.items.iter().position(|event| {
-            self.selected_item
-                .clone()
-                .is_some_and(|selected_event| *event == selected_event)
-        })
-    }
+    selected_item_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +68,7 @@ pub enum Message {
     GlobalEventListenerCommandSender(Sender<subscription::global_event_listener::Command>),
     GlobalEventListenerModeChanged(subscription::global_event_listener::ListenerMode),
     GlobalEventPlayerPlaybackDone,
-    GlobalEventPlayerJustPlayed(subscription::global_event_listener::Event),
+    GlobalEventPlayerJustPlayed(usize),
     GlobalEventPlayerReady(Sender<subscription::global_event_player::Command>),
     RecordButtonPressed,
     PlayButtonPressed,
@@ -86,7 +76,7 @@ pub enum Message {
     Delete,
     Next,
     Previous,
-    OnItemPicked(PrintableEvent),
+    OnItemClicked(usize),
 }
 
 pub fn title(_state: &State) -> String {
@@ -145,56 +135,59 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 .unwrap();
         }
         Message::StopButtonPressed => {
+            if !matches!(state.current_mode, ListenerMode::Disabled) {
+                state
+                    .global_event_listener_command_sender
+                    .try_send(subscription::global_event_listener::Command::SetMode(
+                        ListenerMode::Disabled,
+                    ))
+                    .unwrap();
+            }
+
+            if !matches!(state.playback_mode, PlaybackMode::Idle) {
+                state
+                    .global_event_player_command_sender
+                    .try_send(subscription::global_event_player::Command::StopPlayback)
+                    .unwrap();
+            }
+
             state.playback_mode = PlaybackMode::Idle;
-            state
-                .global_event_listener_command_sender
-                .try_send(Command::SetMode(ListenerMode::Disabled))
-                .unwrap();
-            state
-                .global_event_player_command_sender
-                .try_send(subscription::global_event_player::Command::StopPlayback)
-                .unwrap();
         }
-        Message::OnItemPicked(printable_event) => {
-            state.selected_item = Some(printable_event);
+        Message::OnItemClicked(index) => {
+            state.selected_item_index = Some(index);
         }
         Message::GlobalEventPlayerPlaybackDone => {
-            state.playback_mode = PlaybackMode::Idle;
-            state
-                .global_event_listener_command_sender
-                .try_send(Command::SetMode(ListenerMode::Disabled))
-                .unwrap();
+            return Task::done(Message::StopButtonPressed);
         }
         Message::GlobalEventPlayerReady(sender) => {
             state.global_event_player_command_sender = Some(sender);
         }
         Message::Delete => {
-            if let Some(position) = state.index_of_selected_item() {
-                state.items.remove(position);
+            if let Some(index) = state.selected_item_index {
+                state.items.remove(index);
                 if state.items.is_empty() {
-                    state.selected_item = None;
+                    state.selected_item_index = None;
                 } else {
-                    state.selected_item =
-                        Some(state.items[position.clamp(0, state.items.len() - 1)].clone())
+                    state.selected_item_index = Some(index.clamp(0, state.items.len() - 1))
                 }
                 return Task::done(Message::StopButtonPressed);
             }
         }
-        Message::GlobalEventPlayerJustPlayed(event) => {
-            state.selected_item = Some(PrintableEvent(event));
+        Message::GlobalEventPlayerJustPlayed(index) => {
+            state.selected_item_index = Some(index);
         }
         Message::Next => {
-            if let Some(index) = state.index_of_selected_item() {
+            if let Some(index) = state.selected_item_index {
                 let next_index = index + 1;
                 let next_index = next_index.clamp(0, state.items.len() - 1);
-                state.selected_item = Some(state.items[next_index].clone());
+                state.selected_item_index = Some(next_index);
             }
         }
         Message::Previous => {
-            if let Some(index) = state.index_of_selected_item() {
+            if let Some(index) = state.selected_item_index {
                 let next_index = index as i32 - 1;
                 let next_index = next_index.clamp(0, state.items.len() as i32 - 1);
-                state.selected_item = Some(state.items[next_index as usize].clone());
+                state.selected_item_index = Some(next_index as usize);
             }
         }
     }
@@ -206,14 +199,17 @@ pub fn theme(_state: &State) -> iced::Theme {
     Theme::Oxocarbon
 }
 
-fn list_item<'a, 'b: 'a>(state: &'a State, value: &'b PrintableEvent) -> Element<'a, Message> {
+fn list_item<'a, 'b: 'a>(
+    index: usize,
+    event: &'b PrintableEvent,
+    state: &'a State,
+) -> Element<'a, Message> {
     mouse_area(
-        container(text!("{value}").style(|theme: &iced::Theme| {
+        container(text!("{event}").style(move |theme: &iced::Theme| {
             text::Style {
                 color: if state
-                    .selected_item
-                    .clone()
-                    .is_some_and(|selected| selected == value.clone())
+                    .selected_item_index
+                    .is_some_and(|selected| selected == index)
                 {
                     Some(theme.extended_palette().secondary.base.text)
                 } else {
@@ -223,11 +219,10 @@ fn list_item<'a, 'b: 'a>(state: &'a State, value: &'b PrintableEvent) -> Element
         }))
         .width(Length::Fill)
         .padding([8, 4])
-        .style(|theme: &iced::Theme| {
+        .style(move |theme: &iced::Theme| {
             if state
-                .selected_item
-                .clone()
-                .is_some_and(|selected| selected == value.clone())
+                .selected_item_index
+                .is_some_and(|selected| selected == index)
             {
                 container::background(theme.extended_palette().secondary.base.color)
             } else {
@@ -235,7 +230,7 @@ fn list_item<'a, 'b: 'a>(state: &'a State, value: &'b PrintableEvent) -> Element
             }
         }),
     )
-    .on_press(Message::OnItemPicked(value.clone()))
+    .on_press(Message::OnItemClicked(index))
     .into()
 }
 
@@ -244,7 +239,8 @@ pub fn view(state: &State) -> Element<Message> {
         state
             .items
             .iter()
-            .map(|value| list_item(state, value))
+            .enumerate()
+            .map(|(index, event)| list_item(index, event, state))
             .intersperse_with(|| separator().into()),
     );
 
