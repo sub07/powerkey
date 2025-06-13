@@ -46,3 +46,11 @@ pub fn set_focused_window_by_title<S: AsRef<str>>(title: S) {
         }
     }
 }
+
+#[easy_ext::ext(OrdPairExt)]
+impl<T: PartialOrd> (T, T) {
+    pub fn ordered(self) -> (T, T) {
+        let (a, b) = self;
+        if a < b { (a, b) } else { (b, a) }
+    }
+}

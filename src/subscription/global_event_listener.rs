@@ -8,6 +8,7 @@ use iced::{
     stream,
 };
 use log::info;
+use serde::{Deserialize, Serialize};
 
 use crate::utils::get_focused_window_title;
 
@@ -30,7 +31,7 @@ pub enum Command {
     SetMode(ListenerMode),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Event {
     pub time: SystemTime,
     pub kind: EventKind,
@@ -42,7 +43,7 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum EventKind {
     Input(rdev::EventType),
     FocusChange { window_title: String },
@@ -176,7 +177,7 @@ pub fn stream() -> impl Stream<Item = Message> {
         let (stream_tx, stream_rx) = smol::channel::unbounded::<Message>();
         let (mut event_listener, simulated_tx) = GlobalEventListener::new();
         std::thread::spawn(move || {
-            rdev::_grab(move |event| event_listener.on_event(event, &stream_tx)).unwrap()
+            rdev::grab(move |event| event_listener.on_event(event, &stream_tx)).unwrap()
         });
 
         output.send(Message::Ready(simulated_tx)).await.unwrap();

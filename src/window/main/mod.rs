@@ -1,18 +1,20 @@
-use std::{fmt::Display, time::SystemTime};
+use std::{collections::BTreeSet, fmt::Display, time::SystemTime};
 
 use iced::{
     Element, Length, Subscription, Task, Theme,
+    event::Status,
     futures::channel::mpsc::Sender,
     keyboard::{Key, Modifiers, key::Named},
     widget::{
-        self, button, checkbox, column, container, horizontal_space, mouse_area, row,
-        scrollable::{self, AbsoluteOffset, Viewport},
+        self, button, checkbox, column, container, mouse_area, row,
+        scrollable::{AbsoluteOffset, Viewport},
         text,
     },
     window::Level,
 };
 use itertools::Itertools;
 use rdev::EventType;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     custom_widget::separator::separator,
@@ -20,8 +22,7 @@ use crate::{
         self,
         global_event_listener::{Command, ListenerMode},
     },
-    utils::{SenderOption, SubscriptionExt},
-    window,
+    utils::{OrdPairExt, SenderOption, SubscriptionExt},
 };
 
 mod global_event_mapper;
@@ -34,7 +35,7 @@ enum PlaybackMode {
     Record,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PrintableEvent(subscription::global_event_listener::Event);
 
 impl Display for PrintableEvent {
@@ -57,6 +58,51 @@ impl Display for PrintableEvent {
     }
 }
 
+#[derive(Default, Debug)]
+struct ItemSelectionState {
+    selected_indices: BTreeSet<usize>,
+}
+
+impl ItemSelectionState {
+    fn select(&mut self, index: usize) {
+        self.selected_indices.clear();
+        self.selected_indices.insert(index);
+    }
+
+    fn is_selected(&self, index: usize) -> bool {
+        self.selected_indices.contains(&index)
+    }
+
+    fn get_first_selected(&self) -> Option<usize> {
+        self.selected_indices.first().cloned()
+    }
+
+    fn get_last_selected(&self) -> Option<usize> {
+        self.selected_indices.last().cloned()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = usize> {
+        self.selected_indices.iter().cloned()
+    }
+
+    fn unselect(&mut self) {
+        self.selected_indices.clear();
+    }
+
+    fn expand_to(&mut self, index: usize) {
+        let first_selected = self.selected_indices.first().cloned().unwrap_or(0);
+        self.selected_indices.clear();
+        let (start, end) = (first_selected, index).ordered();
+        for item_index_to_be_added in start..=end {
+            self.add_item_to_selection(item_index_to_be_added);
+        }
+    }
+
+    fn add_item_to_selection(&mut self, index: usize) {
+        self.selected_indices.insert(index);
+    }
+}
+
 pub struct State {
     global_event_listener_command_sender:
         Option<Sender<subscription::global_event_listener::Command>>,
@@ -64,34 +110,45 @@ pub struct State {
     current_mode: subscription::global_event_listener::ListenerMode,
     playback_mode: PlaybackMode,
     items: Vec<PrintableEvent>,
-    selected_item_index: Option<usize>,
+    selected_items_state: ItemSelectionState,
     item_list_scroll_viewport: Option<Viewport>,
     item_list_scroll_id: iced::widget::scrollable::Id,
     window_id: Option<iced::window::Id>,
     always_on_top: bool,
+    modifiers: Modifiers,
 }
 
 pub fn new() -> (State, Task<Message>) {
+    let items = serde_json::from_str::<Vec<PrintableEvent>>(
+        &std::fs::read_to_string("macro.json").unwrap(),
+    )
+    .unwrap();
     let state = State {
         global_event_listener_command_sender: Default::default(),
         global_event_player_command_sender: Default::default(),
         playback_mode: Default::default(),
         current_mode: Default::default(),
-        items: Default::default(),
-        selected_item_index: Default::default(),
+        items,
+        selected_items_state: Default::default(),
         item_list_scroll_viewport: Default::default(),
         item_list_scroll_id: iced::widget::scrollable::Id::unique(),
         window_id: None,
         always_on_top: false,
+        modifiers: Modifiers::default(),
     };
     (state, Task::none())
 }
 
 impl State {
     fn scroll_to_item_task(&self) -> Task<Message> {
-        if let Some((viewport, selected_item_index)) =
-            self.item_list_scroll_viewport.zip(self.selected_item_index)
-        {
+        if let Some(viewport) = self.item_list_scroll_viewport {
+            debug_assert_eq!(1, self.selected_items_state.selected_indices.len());
+            let Some(selected_item_index) =
+                self.selected_items_state.selected_indices.first().cloned()
+            else {
+                return Task::none();
+            };
+
             let item_height = viewport.content_bounds().height / self.items.len() as f32;
             let top = viewport.absolute_offset().y;
             let bottom = viewport.absolute_offset().y + viewport.bounds().height;
@@ -129,16 +186,20 @@ pub enum Message {
     GlobalEventPlayerPlaybackDone,
     GlobalEventPlayerJustPlayed(usize),
     GlobalEventPlayerReady(Sender<subscription::global_event_player::Command>),
+
     RecordButtonPressed,
     PlayButtonPressed,
     StopButtonPressed,
-    Delete,
-    Next,
-    Previous,
-    OnItemClicked(usize),
-    OnItemListScroll(Viewport),
     ToggleAlwaysOnTop(bool),
     WindowId(iced::window::Id),
+    ModifierChanged(Modifiers),
+
+    // Item list events
+    ItemClick(usize),
+    SelectNext,
+    SelectPrevious,
+    ItemScroll(Viewport),
+    ItemDelete,
 }
 
 pub fn title(_state: &State) -> String {
@@ -214,9 +275,17 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             }
 
             state.playback_mode = PlaybackMode::Idle;
+
+            // std::fs::write("macro.json", serde_json::to_string(&state.items).unwrap()).unwrap();
         }
-        Message::OnItemClicked(index) => {
-            state.selected_item_index = Some(index);
+        Message::ItemClick(index) => {
+            if state.modifiers.control() {
+                state.selected_items_state.add_item_to_selection(index);
+            } else if state.modifiers.shift() {
+                state.selected_items_state.expand_to(index);
+            } else {
+                state.selected_items_state.select(index);
+            }
         }
         Message::GlobalEventPlayerPlaybackDone => {
             return Task::done(Message::StopButtonPressed);
@@ -224,37 +293,41 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::GlobalEventPlayerReady(sender) => {
             state.global_event_player_command_sender = Some(sender);
         }
-        Message::Delete => {
-            if let Some(index) = state.selected_item_index {
-                state.items.remove(index);
+        Message::ItemDelete => {
+            if let Some(first_item_selected) = state.selected_items_state.get_first_selected() {
+                for (index_index, index_to_delete) in state.selected_items_state.iter().enumerate()
+                {
+                    state.items.remove(index_to_delete - index_index);
+                }
                 if state.items.is_empty() {
-                    state.selected_item_index = None;
+                    state.selected_items_state.unselect()
                 } else {
-                    state.selected_item_index = Some(index.clamp(0, state.items.len() - 1))
+                    state
+                        .selected_items_state
+                        .select(first_item_selected.clamp(0, state.items.len() - 1));
                 }
                 return Task::done(Message::StopButtonPressed);
             }
         }
         Message::GlobalEventPlayerJustPlayed(index) => {
-            state.selected_item_index = Some(index);
+            state.selected_items_state.select(index);
         }
-        Message::Next => {
-            if let Some(index) = state.selected_item_index {
-                let next_index = index + 1;
+        Message::SelectNext => {
+            if let Some(last_item_selected) = dbg!(state.selected_items_state.get_last_selected()) {
+                let next_index = last_item_selected + 1;
                 let next_index = next_index.clamp(0, state.items.len() - 1);
-                state.selected_item_index = Some(next_index);
+                state.selected_items_state.select(next_index);
                 return state.scroll_to_item_task();
             }
         }
-        Message::Previous => {
-            if let Some(index) = state.selected_item_index {
-                let next_index = index as i32 - 1;
-                let next_index = next_index.clamp(0, state.items.len() as i32 - 1);
-                state.selected_item_index = Some(next_index as usize);
+        Message::SelectPrevious => {
+            if let Some(last_item_selected) = state.selected_items_state.get_first_selected() {
+                let next_index = last_item_selected.saturating_sub(1);
+                state.selected_items_state.select(next_index);
                 return state.scroll_to_item_task();
             }
         }
-        Message::OnItemListScroll(viewport) => {
+        Message::ItemScroll(viewport) => {
             state.item_list_scroll_viewport = Some(viewport);
         }
         Message::ToggleAlwaysOnTop(always_on_top) => {
@@ -275,13 +348,16 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::WindowId(id) => state.window_id = Some(id),
+        Message::ModifierChanged(modifiers) => {
+            state.modifiers = modifiers;
+        }
     }
 
     Task::none()
 }
 
 pub fn theme(_state: &State) -> iced::Theme {
-    Theme::TokyoNightLight
+    Theme::Ferra
 }
 
 fn list_item<'a, 'b: 'a>(
@@ -289,33 +365,28 @@ fn list_item<'a, 'b: 'a>(
     event: &'b PrintableEvent,
     state: &'a State,
 ) -> Element<'a, Message> {
+    let selected = state.selected_items_state.is_selected(index);
     mouse_area(
-        container(text!("{event}").style(move |theme: &iced::Theme| {
-            text::Style {
-                color: if state
-                    .selected_item_index
-                    .is_some_and(|selected| selected == index)
-                {
+        container(
+            text!("{event}").style(move |theme: &iced::Theme| text::Style {
+                color: if selected {
                     Some(theme.extended_palette().secondary.base.text)
                 } else {
                     None
                 },
-            }
-        }))
+            }),
+        )
         .width(Length::Fill)
         .padding([4, 4])
         .style(move |theme: &iced::Theme| {
-            if state
-                .selected_item_index
-                .is_some_and(|selected| selected == index)
-            {
+            if selected {
                 container::background(theme.extended_palette().secondary.base.color)
             } else {
                 Default::default()
             }
         }),
     )
-    .on_press(Message::OnItemClicked(index))
+    .on_press(Message::ItemClick(index))
     .into()
 }
 
@@ -352,7 +423,7 @@ pub fn view(state: &State) -> Element<Message> {
                 widget::scrollable(items)
                     .spacing(8.0)
                     .id(state.item_list_scroll_id.clone())
-                    .on_scroll(Message::OnItemListScroll),
+                    .on_scroll(Message::ItemScroll),
             )
         },
     ]
@@ -364,21 +435,30 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
     let global_event_listener =
         Subscription::run(subscription::global_event_listener::stream).map_into();
     let local_event_listener = iced::keyboard::on_key_press(on_key_press);
+    let local_release_event_listener = iced::event::listen_with(on_event);
     let global_event_player =
         Subscription::run(subscription::global_event_player::stream).map_into();
 
     Subscription::batch([
         global_event_listener,
         local_event_listener,
+        local_release_event_listener,
         global_event_player,
     ])
 }
 
-fn on_key_press(key: Key, _modifiers: Modifiers) -> Option<Message> {
+fn on_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
     match key {
-        Key::Named(Named::Delete) => Some(Message::Delete),
-        Key::Named(Named::ArrowUp) => Some(Message::Previous),
-        Key::Named(Named::ArrowDown) => Some(Message::Next),
+        Key::Named(Named::Delete) => Some(Message::ItemDelete),
+        Key::Named(Named::ArrowUp) => Some(Message::SelectPrevious),
+        Key::Named(Named::ArrowDown) => Some(Message::SelectNext),
         _ => None,
     }
+}
+
+fn on_event(event: iced::Event, _status: Status, _window: iced::window::Id) -> Option<Message> {
+    if let iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) = event {
+        return Some(Message::ModifierChanged(modifiers));
+    }
+    None
 }
