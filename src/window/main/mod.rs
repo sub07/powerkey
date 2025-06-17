@@ -379,13 +379,13 @@ impl State {
 
     fn handle_trigger(&mut self, trigger: Trigger) -> Task<Message> {
         match trigger {
-            Trigger::RecordButton => return Task::done(Message::Command(Command::StartRecording)),
-            Trigger::PlayButton => return Task::done(Message::Command(Command::StartPlayback)),
-            Trigger::StopButton => return Task::done(Message::Command(Command::Stop)),
+            Trigger::RecordButton => Task::done(Message::Command(Command::StartRecording)),
+            Trigger::PlayButton => Task::done(Message::Command(Command::StartPlayback)),
+            Trigger::StopButton => Task::done(Message::Command(Command::Stop)),
             Trigger::AlwaysOnTopCheckbox(checked) => {
-                return Task::done(Message::Command(Command::SetAlwaysOnTop(checked)));
+                Task::done(Message::Command(Command::SetAlwaysOnTop(checked)))
             }
-            Trigger::WindowId(id) => return Task::done(Message::Command(Command::SetWindowId(id))),
+            Trigger::WindowId(id) => Task::done(Message::Command(Command::SetWindowId(id))),
             Trigger::GlobalEvent(global_event_message) => {
                 self.handle_global_event_message(global_event_message)
             }

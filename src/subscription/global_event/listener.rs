@@ -69,40 +69,38 @@ impl State {
         event: rdev::Event,
         message_sender: &smol::channel::Sender<Message>,
     ) -> Option<rdev::Event> {
-        // TODO: Try to offload the event processing away from the hook callback
-
         // Handle commands
         while let Ok(Some(command)) = self.command_rx.try_next() {
             info!("Handle command {command:?} in global event listener");
             self.handle_command(command, message_sender);
         }
 
-        fn filter_window_title<S: AsRef<str>>(title: S) -> bool {
-            match title.as_ref() {
-                "" => false,
-                _ => true,
-            }
+        if let Mode::Disabled = self.mode {
+            return Some(event);
         }
 
-        if let Some(current_window_title) = get_focused_window_title()
-            .ok()
-            .filter(|title| filter_window_title(title))
-        {
-            if current_window_title != self.current_window_title {
-                self.current_window_title = current_window_title.to_owned();
-                message_sender
-                    .send_blocking(Message::Event(Event::new(
-                        SystemTime::now(),
-                        EventKind::FocusChange {
-                            window_title: self.current_window_title.clone(),
-                        },
-                    )))
-                    .unwrap();
+        if let Mode::Listen = self.mode {
+            if let Some(current_window_title) = get_focused_window_title()
+                .ok()
+                .filter(|title| filter_window_title(title))
+            {
+                if current_window_title != self.current_window_title {
+                    self.current_window_title = current_window_title.to_owned();
+                    message_sender
+                        .send_blocking(Message::Event(Event::new(
+                            SystemTime::now(),
+                            EventKind::FocusChange {
+                                window_title: self.current_window_title.clone(),
+                            },
+                        )))
+                        .unwrap();
+                }
             }
         }
 
         // We don't care about mouse events
-        // Keep this after command pumping to allow mouse event to trigger it. Alternative would be to wake this callback on a regular basis if no event is shot
+        // Keep this after command pumping to allow mouse event to trigger it.
+        // Alternative would be to wake this callback on a regular basis if no event is triggered
         if let rdev::Event {
             event_type:
                 rdev::EventType::Wheel { .. }
@@ -116,7 +114,7 @@ impl State {
         }
 
         match &mut self.mode {
-            Mode::Disabled => Some(event),
+            Mode::Disabled => unreachable!("Disabled is short circuited"),
             Mode::Listen => {
                 message_sender
                     .send_blocking(Message::Event(Event::new(
@@ -141,6 +139,13 @@ impl State {
                 None
             }
         }
+    }
+}
+
+fn filter_window_title<S: AsRef<str>>(title: S) -> bool {
+    match title.as_ref() {
+        "" => false,
+        _ => true,
     }
 }
 
