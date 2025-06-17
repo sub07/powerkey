@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fmt::Display, time::SystemTime};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fmt::Display,
+    time::SystemTime,
+};
 
 use iced::{
     Element, Length, Subscription, Task, Theme,
@@ -18,14 +22,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     custom_widget::separator::separator,
-    subscription::{
-        self,
-        global_event_listener::{Command, ListenerMode},
-    },
+    subscription::global_event,
     utils::{OrdPairExt, SenderOption, SubscriptionExt},
 };
 
-mod global_event_mapper;
+mod mapper;
 
 #[derive(Default, Debug)]
 enum PlaybackMode {
@@ -36,23 +37,24 @@ enum PlaybackMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PrintableEvent(subscription::global_event_listener::Event);
+pub struct PrintableEvent(global_event::Event);
 
 impl Display for PrintableEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0.kind {
-            subscription::global_event_listener::EventKind::Input(event) => match event {
+            global_event::EventKind::Input(event) => match event {
                 EventType::KeyPress(key) => write!(f, "Press {key:?}"),
                 EventType::KeyRelease(key) => write!(f, "Release {key:?}"),
                 _ => unreachable!("mouse event not supported"),
             },
-            subscription::global_event_listener::EventKind::FocusChange {
-                window_title, ..
-            } => {
-                write!(f, "Focus changed to window \"{window_title}\"")
+            global_event::EventKind::FocusChange { window_title, .. } => {
+                write!(f, "Window changed to \"{window_title}\"")
             }
-            subscription::global_event_listener::EventKind::Delay(duration) => {
+            global_event::EventKind::Delay(duration) => {
                 write!(f, "{}ms delay", duration.as_millis())
+            }
+            global_event::EventKind::YieldFocus => {
+                write!(f, "Restore previous window")
             }
         }
     }
@@ -104,10 +106,9 @@ impl ItemSelectionState {
 }
 
 pub struct State {
-    global_event_listener_command_sender:
-        Option<Sender<subscription::global_event_listener::Command>>,
-    global_event_player_command_sender: Option<Sender<subscription::global_event_player::Command>>,
-    current_mode: subscription::global_event_listener::ListenerMode,
+    global_event_listener_command_sender: Option<Sender<global_event::listener::Command>>,
+    global_event_player_command_sender: Option<Sender<global_event::player::Command>>,
+    current_mode: global_event::listener::Mode,
     playback_mode: PlaybackMode,
     items: Vec<PrintableEvent>,
     selected_items_state: ItemSelectionState,
@@ -123,6 +124,7 @@ pub fn new() -> (State, Task<Message>) {
         &std::fs::read_to_string("macro.json").unwrap(),
     )
     .unwrap();
+    let always_on_top = true;
     let state = State {
         global_event_listener_command_sender: Default::default(),
         global_event_player_command_sender: Default::default(),
@@ -133,10 +135,10 @@ pub fn new() -> (State, Task<Message>) {
         item_list_scroll_viewport: Default::default(),
         item_list_scroll_id: iced::widget::scrollable::Id::unique(),
         window_id: None,
-        always_on_top: false,
+        always_on_top,
         modifiers: Modifiers::default(),
     };
-    (state, Task::none())
+    (state, Task::done(Message::ToggleAlwaysOnTop(always_on_top)))
 }
 
 impl State {
@@ -180,12 +182,12 @@ impl State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    GlobalEvent(subscription::global_event_listener::Event),
-    GlobalEventListenerCommandSender(Sender<subscription::global_event_listener::Command>),
-    GlobalEventListenerModeChanged(subscription::global_event_listener::ListenerMode),
+    GlobalEvent(global_event::Event),
+    GlobalEventListenerCommandSender(Sender<global_event::listener::Command>),
+    GlobalEventListenerModeChanged(global_event::listener::Mode),
     GlobalEventPlayerPlaybackDone,
     GlobalEventPlayerJustPlayed(usize),
-    GlobalEventPlayerReady(Sender<subscription::global_event_player::Command>),
+    GlobalEventPlayerReady(Sender<global_event::player::Command>),
 
     RecordButtonPressed,
     PlayButtonPressed,
@@ -200,6 +202,8 @@ pub enum Message {
     SelectPrevious,
     ItemScroll(Viewport),
     ItemDelete,
+
+    AddYieldEventAfterCurrent,
 }
 
 pub fn title(_state: &State) -> String {
@@ -208,23 +212,34 @@ pub fn title(_state: &State) -> String {
 
 pub fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
-        Message::GlobalEvent(event) => {
-            if let (ListenerMode::Listen, PlaybackMode::Record) =
-                (&state.current_mode, &mut state.playback_mode)
-            {
+        Message::GlobalEvent(event) => match (&state.current_mode, &mut state.playback_mode) {
+            (global_event::listener::Mode::Listen, PlaybackMode::Record) => {
                 if let Some(previous_event) = state.items.last() {
                     if let Ok(delay) = event.time.duration_since(previous_event.0.time) {
-                        state.items.push(PrintableEvent(
-                            subscription::global_event_listener::Event::new(
-                                SystemTime::now(),
-                                subscription::global_event_listener::EventKind::Delay(delay),
-                            ),
-                        ));
+                        state.items.push(PrintableEvent(global_event::Event::new(
+                            SystemTime::now(),
+                            global_event::EventKind::Delay(delay),
+                        )));
                     }
                 }
                 state.items.push(PrintableEvent(event));
             }
-        }
+            (global_event::listener::Mode::Grab { .. }, PlaybackMode::Play) => {
+                if let global_event::Event {
+                    kind: global_event::EventKind::Input(event),
+                    time,
+                } = event
+                {
+                    state
+                        .global_event_player_command_sender
+                        .try_send(global_event::player::Command::StoreMissedEvent(
+                            global_event::player::MissedEvent { event, time },
+                        ))
+                        .unwrap()
+                }
+            }
+            _ => {}
+        },
         Message::GlobalEventListenerCommandSender(sender) => {
             state.global_event_listener_command_sender = Some(sender);
         }
@@ -234,35 +249,37 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.items.clear();
             state
                 .global_event_listener_command_sender
-                .try_send(Command::SetMode(ListenerMode::Listen))
+                .try_send(global_event::listener::Command::ChangeMode(
+                    global_event::listener::Mode::Listen,
+                ))
                 .unwrap();
         }
         Message::PlayButtonPressed => {
             state.playback_mode = PlaybackMode::Play;
             state
-                .global_event_listener_command_sender
-                .try_send(Command::SetMode(ListenerMode::Disabled))
-                .unwrap();
-            state
                 .global_event_player_command_sender
-                .try_send(
-                    subscription::global_event_player::Command::StartPlaybackWith(
-                        state
-                            .items
-                            .clone()
-                            .into_iter()
-                            .map(|event| event.0)
-                            .collect_vec(),
-                    ),
-                )
+                .try_send(global_event::player::Command::StartPlaybackWith(
+                    state
+                        .items
+                        .clone()
+                        .into_iter()
+                        .map(|event| event.0)
+                        .collect_vec(),
+                    state
+                        .global_event_listener_command_sender
+                        .as_ref()
+                        .unwrap()
+                        .clone(),
+                ))
                 .unwrap();
         }
         Message::StopButtonPressed => {
-            if !matches!(state.current_mode, ListenerMode::Disabled) {
+            if let PlaybackMode::Play = &state.playback_mode {}
+            if !matches!(state.current_mode, global_event::listener::Mode::Disabled) {
                 state
                     .global_event_listener_command_sender
-                    .try_send(subscription::global_event_listener::Command::SetMode(
-                        ListenerMode::Disabled,
+                    .try_send(global_event::listener::Command::ChangeMode(
+                        global_event::listener::Mode::Disabled,
                     ))
                     .unwrap();
             }
@@ -270,13 +287,13 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if !matches!(state.playback_mode, PlaybackMode::Idle) {
                 state
                     .global_event_player_command_sender
-                    .try_send(subscription::global_event_player::Command::StopPlayback)
+                    .try_send(global_event::player::Command::StopPlayback)
                     .unwrap();
             }
 
             state.playback_mode = PlaybackMode::Idle;
 
-            // std::fs::write("macro.json", serde_json::to_string(&state.items).unwrap()).unwrap();
+            std::fs::write("macro.json", serde_json::to_string(&state.items).unwrap()).unwrap();
         }
         Message::ItemClick(index) => {
             if state.modifiers.control() {
@@ -313,7 +330,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.selected_items_state.select(index);
         }
         Message::SelectNext => {
-            if let Some(last_item_selected) = dbg!(state.selected_items_state.get_last_selected()) {
+            if let Some(last_item_selected) = state.selected_items_state.get_last_selected() {
                 let next_index = last_item_selected + 1;
                 let next_index = next_index.clamp(0, state.items.len() - 1);
                 state.selected_items_state.select(next_index);
@@ -350,6 +367,17 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::WindowId(id) => state.window_id = Some(id),
         Message::ModifierChanged(modifiers) => {
             state.modifiers = modifiers;
+        }
+        Message::AddYieldEventAfterCurrent => {
+            let yield_event = PrintableEvent(global_event::Event::new(
+                SystemTime::now(),
+                global_event::EventKind::YieldFocus,
+            ));
+            if let Some(last_selected_index) = state.selected_items_state.get_last_selected() {
+                state.items.insert(last_selected_index + 1, yield_event);
+            } else {
+                state.items.push(yield_event);
+            }
         }
     }
 
@@ -414,6 +442,7 @@ pub fn view(state: &State) -> Element<Message> {
             button(text!("Record")).on_press(Message::RecordButtonPressed),
             button(text!("Play")).on_press(Message::PlayButtonPressed),
             button(text!("Stop")).on_press(Message::StopButtonPressed),
+            button(text!("Add yield")).on_press(Message::AddYieldEventAfterCurrent),
         ]
         .spacing(4.0),
         if state.items.is_empty() {
@@ -432,12 +461,10 @@ pub fn view(state: &State) -> Element<Message> {
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
-    let global_event_listener =
-        Subscription::run(subscription::global_event_listener::stream).map_into();
+    let global_event_listener = Subscription::run(global_event::listener::subscription).map_into();
     let local_event_listener = iced::keyboard::on_key_press(on_key_press);
     let local_release_event_listener = iced::event::listen_with(on_event);
-    let global_event_player =
-        Subscription::run(subscription::global_event_player::stream).map_into();
+    let global_event_player = Subscription::run(global_event::player::subscription).map_into();
 
     Subscription::batch([
         global_event_listener,
@@ -447,7 +474,7 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
     ])
 }
 
-fn on_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
+fn on_key_press(key: Key, _modifiers: Modifiers) -> Option<Message> {
     match key {
         Key::Named(Named::Delete) => Some(Message::ItemDelete),
         Key::Named(Named::ArrowUp) => Some(Message::SelectPrevious),

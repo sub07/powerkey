@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::{collections::VecDeque, time::SystemTime};
 
 use iced::{
     futures::{
@@ -8,54 +8,39 @@ use iced::{
     stream,
 };
 use log::info;
-use serde::{Deserialize, Serialize};
 
-use crate::utils::get_focused_window_title;
+use crate::{
+    subscription::global_event::{Event, EventKind},
+    utils::get_focused_window_title,
+};
 
 #[derive(Default, Clone, Debug)]
-pub enum ListenerMode {
+pub enum Mode {
     #[default]
     Disabled,
     Listen,
-    Grab,
+    Grab {
+        simulated_events: VecDeque<rdev::EventType>,
+    },
 }
 
-struct GlobalEventListener {
-    mode: ListenerMode,
+struct State {
+    mode: Mode,
     command_rx: Receiver<Command>,
     current_window_title: String,
 }
 
 #[derive(Debug)]
 pub enum Command {
-    SetMode(ListenerMode),
+    ChangeMode(Mode),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Event {
-    pub time: SystemTime,
-    pub kind: EventKind,
-}
-
-impl Event {
-    pub fn new(time: SystemTime, kind: EventKind) -> Self {
-        Self { time, kind }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub enum EventKind {
-    Input(rdev::EventType),
-    FocusChange { window_title: String },
-    Delay(Duration),
-}
-
-impl GlobalEventListener {
+impl State {
     fn new() -> (Self, Sender<Command>) {
         let (tx, rx) = channel(100);
         (
             Self {
-                mode: ListenerMode::Disabled,
+                mode: Mode::Disabled,
                 command_rx: rx,
                 current_window_title: get_focused_window_title()
                     .unwrap_or("Could not get window".into()),
@@ -70,26 +55,12 @@ impl GlobalEventListener {
         message_sender: &smol::channel::Sender<Message>,
     ) {
         match command {
-            Command::SetMode(mode) => match mode {
-                ListenerMode::Disabled => {
-                    self.mode = ListenerMode::Disabled;
-                    message_sender
-                        .send_blocking(Message::ModeJustSet(ListenerMode::Disabled))
-                        .unwrap();
-                }
-                ListenerMode::Listen => {
-                    self.mode = ListenerMode::Listen;
-                    message_sender
-                        .send_blocking(Message::ModeJustSet(ListenerMode::Listen))
-                        .unwrap();
-                }
-                ListenerMode::Grab => {
-                    self.mode = ListenerMode::Grab;
-                    message_sender
-                        .send_blocking(Message::ModeJustSet(ListenerMode::Grab))
-                        .unwrap();
-                }
-            },
+            Command::ChangeMode(mode) => {
+                message_sender
+                    .send_blocking(Message::ModeJustSet(mode.clone())) // Use lightweight message instead of copying vec in grab
+                    .unwrap();
+                self.mode = mode;
+            }
         }
     }
 
@@ -143,8 +114,8 @@ impl GlobalEventListener {
         }
 
         match &mut self.mode {
-            ListenerMode::Disabled => Some(event),
-            ListenerMode::Listen => {
+            Mode::Disabled => Some(event),
+            Mode::Listen => {
                 message_sender
                     .send_blocking(Message::Event(Event::new(
                         event.time,
@@ -153,7 +124,12 @@ impl GlobalEventListener {
                     .unwrap();
                 Some(event)
             }
-            ListenerMode::Grab => {
+            Mode::Grab { simulated_events } => {
+                if let Some(simulated_event) = simulated_events.front() {
+                    if event.event_type == *simulated_event {
+                        return Some(event);
+                    }
+                }
                 message_sender
                     .send_blocking(Message::Event(Event::new(
                         event.time,
@@ -168,14 +144,14 @@ impl GlobalEventListener {
 
 pub enum Message {
     Ready(Sender<Command>),
-    ModeJustSet(ListenerMode),
+    ModeJustSet(Mode),
     Event(Event),
 }
 
-pub fn stream() -> impl Stream<Item = Message> {
+pub fn subscription() -> impl Stream<Item = Message> {
     stream::channel(100, async |mut output| {
         let (stream_tx, stream_rx) = smol::channel::unbounded::<Message>();
-        let (mut event_listener, simulated_tx) = GlobalEventListener::new();
+        let (mut event_listener, simulated_tx) = State::new();
         std::thread::spawn(move || {
             rdev::grab(move |event| event_listener.on_event(event, &stream_tx)).unwrap()
         });
