@@ -18,8 +18,11 @@ impl Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Input(pub rdev::EventType);
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum EventKind {
-    Input(rdev::EventType),
+    Input(Input),
     FocusChange { window_title: String },
     Delay(Duration),
     YieldFocus,

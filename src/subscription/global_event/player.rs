@@ -14,7 +14,7 @@ use log::{error, info};
 use smol::{Timer, stream::StreamExt};
 
 use crate::{
-    subscription::global_event::{Event, EventKind, listener},
+    subscription::global_event::{Event, EventKind, Input, listener},
     utils::{get_focused_window_title, set_focused_window_by_title},
 };
 
@@ -43,7 +43,7 @@ impl PlayingState {
             .iter()
             .take_while(|event| !matches!(event.kind, EventKind::YieldFocus))
             .filter_map(|event| match event.kind {
-                EventKind::Input(event_type) => Some(event_type),
+                EventKind::Input(Input(event_type)) => Some(event_type),
                 _ => None,
             })
             .collect()
@@ -102,7 +102,7 @@ impl Player {
         let event = &playing_state.events[playing_state.event_index];
 
         match &event.kind {
-            EventKind::Input(event) => {
+            EventKind::Input(Input(event)) => {
                 rdev::simulate(event).unwrap();
                 Timer::after(Duration::from_millis(16)).await;
             }

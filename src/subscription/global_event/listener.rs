@@ -10,7 +10,7 @@ use iced::{
 use log::info;
 
 use crate::{
-    subscription::global_event::{Event, EventKind},
+    subscription::global_event::{Event, EventKind, Input},
     utils::get_focused_window_title,
 };
 
@@ -69,6 +69,8 @@ impl State {
         event: rdev::Event,
         message_sender: &smol::channel::Sender<Message>,
     ) -> Option<rdev::Event> {
+        // TODO: Try to offload the event processing away from the hook callback
+
         // Handle commands
         while let Ok(Some(command)) = self.command_rx.try_next() {
             info!("Handle command {command:?} in global event listener");
@@ -119,7 +121,7 @@ impl State {
                 message_sender
                     .send_blocking(Message::Event(Event::new(
                         event.time,
-                        EventKind::Input(event.event_type),
+                        EventKind::Input(Input(event.event_type)),
                     )))
                     .unwrap();
                 Some(event)
@@ -133,7 +135,7 @@ impl State {
                 message_sender
                     .send_blocking(Message::Event(Event::new(
                         event.time,
-                        EventKind::Input(event.event_type),
+                        EventKind::Input(Input(event.event_type)),
                     )))
                     .unwrap();
                 None

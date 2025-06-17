@@ -1,17 +1,20 @@
-use crate::{subscription, window::main::Message};
+use crate::{
+    subscription,
+    window::main::{GlobalEventTrigger, Message, Trigger},
+};
 
 impl From<subscription::global_event::listener::Message> for Message {
     fn from(message: subscription::global_event::listener::Message) -> Self {
         match message {
-            subscription::global_event::listener::Message::Ready(sender) => {
-                Message::GlobalEventListenerCommandSender(sender)
-            }
+            subscription::global_event::listener::Message::Ready(sender) => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::ListenerReady(sender)),
+            ),
             subscription::global_event::listener::Message::Event(event) => {
-                Message::GlobalEvent(event)
+                Message::Trigger(Trigger::GlobalEvent(GlobalEventTrigger::Event(event)))
             }
-            subscription::global_event::listener::Message::ModeJustSet(mode) => {
-                Message::GlobalEventListenerModeChanged(mode)
-            }
+            subscription::global_event::listener::Message::ModeJustSet(mode) => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::ListenerModeJustChanged(mode)),
+            ),
         }
     }
 }
@@ -19,15 +22,15 @@ impl From<subscription::global_event::listener::Message> for Message {
 impl From<subscription::global_event::player::Message> for Message {
     fn from(message: subscription::global_event::player::Message) -> Self {
         match message {
-            subscription::global_event::player::Message::PlaybackDone => {
-                Message::GlobalEventPlayerPlaybackDone
-            }
-            subscription::global_event::player::Message::SenderReady(sender) => {
-                Message::GlobalEventPlayerReady(sender)
-            }
-            subscription::global_event::player::Message::JustPlayed { index } => {
-                Message::GlobalEventPlayerJustPlayed(index)
-            }
+            subscription::global_event::player::Message::PlaybackDone => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::PlayerPlaybackJustEnded),
+            ),
+            subscription::global_event::player::Message::SenderReady(sender) => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::PlayerReady(sender)),
+            ),
+            subscription::global_event::player::Message::JustPlayed { index } => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::PlayerJustPlayed(index)),
+            ),
         }
     }
 }

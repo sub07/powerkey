@@ -17,12 +17,12 @@ fn main() {
         .init();
 
     iced::application(
-        window::main::title,
-        window::main::update,
-        window::main::view,
+        window::main::State::title,
+        window::main::State::update,
+        window::main::State::view,
     )
     .theme(window::main::theme)
     .subscription(window::main::subscription)
-    .run_with(window::main::new)
+    .run_with(window::main::State::new)
     .unwrap();
 }
