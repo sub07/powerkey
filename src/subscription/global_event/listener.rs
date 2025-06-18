@@ -1,18 +1,17 @@
 use std::{collections::VecDeque, time::SystemTime};
 
-use iced::{
-    futures::{
-        SinkExt, Stream,
-        channel::mpsc::{Receiver, Sender, channel},
-    },
-    stream,
-};
-use log::info;
-
 use crate::{
     subscription::global_event::{Event, EventKind, Input},
     utils::get_focused_window_title,
 };
+use iced::{
+    futures::{
+        SinkExt, Stream, StreamExt,
+        channel::mpsc::{Receiver, Sender, channel},
+    },
+    stream,
+};
+use log::{debug, error, info, trace};
 
 #[derive(Default, Clone, Debug)]
 pub enum Mode {
@@ -24,6 +23,7 @@ pub enum Mode {
     },
 }
 
+#[derive(Debug)]
 struct State {
     mode: Mode,
     command_rx: Receiver<Command>,
@@ -33,6 +33,15 @@ struct State {
 #[derive(Debug)]
 pub enum Command {
     ChangeMode(Mode),
+    SetNextEventsToBeIgnoredByGrab(Vec<rdev::EventType>),
+}
+
+#[derive(Debug)]
+pub enum Message {
+    Ready(Sender<Command>),
+    ModeJustSet(Mode),
+    SetNextEventsToBeIgnoredByGrabDone,
+    Event(Event),
 }
 
 impl State {
@@ -49,17 +58,29 @@ impl State {
         )
     }
 
-    fn handle_command(
-        &mut self,
-        command: Command,
-        message_sender: &smol::channel::Sender<Message>,
-    ) {
+    fn handle_command(&mut self, command: Command, mut message_sender: Sender<Message>) {
         match command {
             Command::ChangeMode(mode) => {
                 message_sender
-                    .send_blocking(Message::ModeJustSet(mode.clone())) // Use lightweight message instead of copying vec in grab
+                    .try_send(Message::ModeJustSet(mode.clone())) // TODO: Use lightweight message instead of copying vec in grab
                     .unwrap();
                 self.mode = mode;
+                info!("Listener: mode set to {:#?}", self.mode);
+            }
+            Command::SetNextEventsToBeIgnoredByGrab(events) => {
+                let Mode::Grab { simulated_events } = &mut self.mode else {
+                    error!(
+                        "Trying to add more to grabber ignore list while being in {:?} mode",
+                        self.mode
+                    );
+                    return;
+                };
+                for event in events.into_iter().rev() {
+                    simulated_events.push_front(event);
+                }
+                message_sender
+                    .try_send(Message::SetNextEventsToBeIgnoredByGrabDone)
+                    .unwrap();
             }
         }
     }
@@ -67,12 +88,12 @@ impl State {
     fn on_event(
         &mut self,
         event: rdev::Event,
-        message_sender: &smol::channel::Sender<Message>,
+        mut message_sender: Sender<Message>,
     ) -> Option<rdev::Event> {
         // Handle commands
         while let Ok(Some(command)) = self.command_rx.try_next() {
-            info!("Handle command {command:?} in global event listener");
-            self.handle_command(command, message_sender);
+            trace!("Listener command: {command:#?}");
+            self.handle_command(command, message_sender.clone());
         }
 
         if let Mode::Disabled = self.mode {
@@ -87,7 +108,7 @@ impl State {
                 if current_window_title != self.current_window_title {
                     self.current_window_title = current_window_title.to_owned();
                     message_sender
-                        .send_blocking(Message::Event(Event::new(
+                        .try_send(Message::Event(Event::new(
                             SystemTime::now(),
                             EventKind::FocusChange {
                                 window_title: self.current_window_title.clone(),
@@ -117,7 +138,7 @@ impl State {
             Mode::Disabled => unreachable!("Disabled is short circuited"),
             Mode::Listen => {
                 message_sender
-                    .send_blocking(Message::Event(Event::new(
+                    .try_send(Message::Event(Event::new(
                         event.time,
                         EventKind::Input(Input(event.event_type)),
                     )))
@@ -131,7 +152,7 @@ impl State {
                     }
                 }
                 message_sender
-                    .send_blocking(Message::Event(Event::new(
+                    .try_send(Message::Event(Event::new(
                         event.time,
                         EventKind::Input(Input(event.event_type)),
                     )))
@@ -143,30 +164,27 @@ impl State {
 }
 
 fn filter_window_title<S: AsRef<str>>(title: S) -> bool {
+    #[allow(clippy::match_like_matches_macro, reason = "More will be added later")]
     match title.as_ref() {
         "" => false,
         _ => true,
     }
 }
 
-pub enum Message {
-    Ready(Sender<Command>),
-    ModeJustSet(Mode),
-    Event(Event),
-}
-
 pub fn subscription() -> impl Stream<Item = Message> {
     stream::channel(100, async |mut output| {
-        let (stream_tx, stream_rx) = smol::channel::unbounded::<Message>();
+        let (stream_tx, mut stream_rx) = channel(100);
         let (mut event_listener, simulated_tx) = State::new();
         std::thread::spawn(move || {
-            rdev::grab(move |event| event_listener.on_event(event, &stream_tx)).unwrap()
+            rdev::grab(move |event| event_listener.on_event(event, stream_tx.clone())).unwrap()
         });
 
         output.send(Message::Ready(simulated_tx)).await.unwrap();
 
         loop {
-            let message = stream_rx.recv().await.unwrap();
+            debug!("Listener: listening grab thread relay...");
+            let message = stream_rx.next().await.unwrap();
+            debug!("Listener: relaying message to subscription: {message:?}");
             output.send(message).await.unwrap();
         }
     })

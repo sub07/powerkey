@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     time::{Duration, SystemTime},
 };
 
@@ -10,7 +10,8 @@ use iced::{
     },
     stream,
 };
-use log::{error, info};
+use itertools::Itertools;
+use log::{error, info, trace, warn};
 use smol::{Timer, stream::StreamExt};
 
 use crate::{
@@ -20,24 +21,44 @@ use crate::{
 
 pub enum Message {
     SenderReady(Sender<Command>),
+    PlaybackJustStarted,
     JustPlayed { index: usize },
     PlaybackDone,
 }
 
 #[derive(Debug)]
 pub enum Command {
-    StartPlaybackWith(Vec<Event>, Sender<listener::Command>),
+    InitializePlayback(Vec<Event>, Sender<listener::Command>),
+    NotifyGrabReady,
     StoreMissedEvent(MissedEvent),
+    NotifyMissedEventsAddedToGrabber,
     StopPlayback,
 }
 
-struct PlayingState {
-    event_index: usize,
-    listener_sender: Sender<listener::Command>,
-    events: Vec<Event>,
+#[derive(Debug)]
+enum PlayingState {
+    WaitingForGrabMode,
+    Running,
+    WaitingForMissedEventsAddedToGrabber { yield_end_time: SystemTime },
 }
 
-impl PlayingState {
+#[derive(Debug)]
+struct YieldContext {
+    start_time: SystemTime,
+    previous_window_title: String,
+}
+
+#[derive(Debug)]
+struct Playing {
+    event_index: usize,
+    listener_command_sender: Sender<listener::Command>,
+    events: Vec<Event>,
+    state: PlayingState,
+    missed_events: BTreeSet<MissedEvent>,
+    yield_context: Option<YieldContext>,
+}
+
+impl Playing {
     pub fn build_simulated_event_for_grab_mode(&self) -> VecDeque<rdev::EventType> {
         self.events[self.event_index..]
             .iter()
@@ -48,55 +69,126 @@ impl PlayingState {
             })
             .collect()
     }
-}
 
-enum PlayerState {
-    Playing(PlayingState),
-    Idle,
+    pub fn filtered_missed_events(
+        &self,
+        start: SystemTime,
+        end: SystemTime,
+    ) -> impl Iterator<Item = rdev::EventType> {
+        self.missed_events
+            .iter()
+            .skip_while(move |missed_event| missed_event.time < start)
+            .take_while(move |missed_event| missed_event.time < end)
+            .map(|missed_event| missed_event.event)
+    }
 }
 
 #[derive(Debug)]
+enum PlayerState {
+    Playing(Playing),
+    Idle,
+}
+
+#[derive(Debug, Clone)]
 pub struct MissedEvent {
     pub event: rdev::EventType,
     pub time: SystemTime,
 }
 
-struct YieldContext {
-    window_title_before_last_focus: String,
-    missed_events: Vec<MissedEvent>,
+impl Ord for MissedEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.time.cmp(&other.time)
+    }
 }
 
+impl PartialOrd for MissedEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for MissedEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.time.eq(&other.time)
+    }
+}
+
+impl Eq for MissedEvent {}
+
+#[derive(Debug)]
 struct Player {
     state: PlayerState,
-    yield_context: Option<YieldContext>,
 }
 
 impl Player {
     fn new() -> Self {
         Self {
             state: PlayerState::Idle,
-            yield_context: None,
         }
     }
 
-    fn start_playback(&mut self, events: Vec<Event>, listener_sender: Sender<listener::Command>) {
-        self.state = PlayerState::Playing(PlayingState {
+    fn initialize_playback(
+        &mut self,
+        events: Vec<Event>,
+        listener_command_sender: Sender<listener::Command>,
+    ) {
+        let mut playing = Playing {
             event_index: 0,
-            listener_sender,
+            listener_command_sender,
             events,
-        });
+            state: PlayingState::WaitingForGrabMode,
+            missed_events: Default::default(),
+            yield_context: None,
+        };
+
+        let simulated_events = playing.build_simulated_event_for_grab_mode();
+
+        playing
+            .listener_command_sender
+            .try_send(listener::Command::ChangeMode(listener::Mode::Grab {
+                simulated_events,
+            }))
+            .unwrap();
+
+        self.state = PlayerState::Playing(playing);
+        info!("Player playback initialized: {:#?}", self);
     }
 
-    async fn perform_playback(&mut self) -> Message {
+    fn notify_grab_ready(&mut self, mut message_sender: Sender<Message>) {
         let PlayerState::Playing(playing_state) = &mut self.state else {
-            error!("Tried performing playback while being idle");
-            return Message::PlaybackDone;
+            error!(
+                "Invalid player state when receiving NotifyGrabReady command. Expected Playing state, got {:?}",
+                self.state
+            );
+            return;
         };
+        let PlayingState::WaitingForGrabMode = playing_state.state else {
+            error!(
+                "Invalid player state when receiving NotifyGrabReady command. Expected WaitingForGrabMode state, got {:?}",
+                playing_state.state
+            );
+            return;
+        };
+        playing_state.state = PlayingState::Running;
+        message_sender
+            .try_send(Message::PlaybackJustStarted)
+            .unwrap();
+    }
+
+    async fn perform_playback(&mut self, mut output: Sender<Message>) {
+        let PlayerState::Playing(playing_state) = &mut self.state else {
+            return;
+        };
+
+        if !matches!(playing_state.state, PlayingState::Running) {
+            return;
+        }
 
         if playing_state.event_index >= playing_state.events.len() {
             info!("Playback done");
             self.stop_playback();
-            return Message::PlaybackDone;
+            output.send(Message::PlaybackDone).await.unwrap();
+            return;
         }
 
         let event = &playing_state.events[playing_state.event_index];
@@ -108,16 +200,9 @@ impl Player {
             }
             EventKind::FocusChange { window_title } => {
                 if let Ok(window_title) = get_focused_window_title() {
-                    playing_state
-                        .listener_sender
-                        .send(listener::Command::ChangeMode(listener::Mode::Grab {
-                            simulated_events: playing_state.build_simulated_event_for_grab_mode(),
-                        }))
-                        .await
-                        .unwrap();
-                    self.yield_context = Some(YieldContext {
-                        window_title_before_last_focus: window_title,
-                        missed_events: Default::default(),
+                    playing_state.yield_context = Some(YieldContext {
+                        previous_window_title: window_title,
+                        start_time: SystemTime::now(),
                     });
                 }
                 set_focused_window_by_title(window_title);
@@ -126,29 +211,38 @@ impl Player {
                 Timer::after(*duration).await;
             }
             EventKind::YieldFocus => {
-                if let Some(mut yield_context) = self.yield_context.take() {
+                if let Some(yield_context) = &playing_state.yield_context {
+                    let end_time = SystemTime::now();
+                    playing_state.state = PlayingState::WaitingForMissedEventsAddedToGrabber {
+                        yield_end_time: end_time,
+                    };
+                    let yield_time_missed_events = playing_state
+                        .filtered_missed_events(yield_context.start_time, end_time)
+                        .collect_vec();
                     playing_state
-                        .listener_sender
-                        .send(listener::Command::ChangeMode(listener::Mode::Disabled))
+                        .listener_command_sender
+                        .send(listener::Command::SetNextEventsToBeIgnoredByGrab(
+                            yield_time_missed_events,
+                        ))
                         .await
                         .unwrap();
-
-                    set_focused_window_by_title(yield_context.window_title_before_last_focus);
-                    yield_context.missed_events.sort_by_key(|e| e.time);
-
-                    for missed_event in yield_context.missed_events {
-                        rdev::simulate(&missed_event.event).unwrap();
-                        Timer::after(Duration::from_millis(16)).await;
-                    }
+                } else {
+                    warn!(
+                        "No yield context for yield focus at index {}: Make sure to focus a window before yielding context",
+                        playing_state.event_index
+                    );
                 }
             }
         }
 
         playing_state.event_index += 1;
 
-        Message::JustPlayed {
-            index: playing_state.event_index - 1,
-        }
+        output
+            .send(Message::JustPlayed {
+                index: playing_state.event_index - 1,
+            })
+            .await
+            .unwrap();
     }
 
     fn stop_playback(&mut self) {
@@ -156,9 +250,58 @@ impl Player {
     }
 
     fn store_missed_event(&mut self, event: MissedEvent) {
-        if let Some(yield_context) = &mut self.yield_context {
-            yield_context.missed_events.push(event);
+        let PlayerState::Playing(Playing {
+            state: PlayingState::Running,
+            missed_events,
+            ..
+        }) = &mut self.state
+        else {
+            error!("Expected running player while storing missed event");
+            return;
+        };
+        missed_events.insert(event);
+    }
+
+    async fn notify_missed_events_added_to_grabber(&mut self) {
+        let PlayerState::Playing(playing_state) = &mut self.state else {
+            error!("notify_missed_events_added_to_grabber should not be called if not playing");
+            return;
+        };
+
+        let PlayingState::WaitingForMissedEventsAddedToGrabber { yield_end_time } =
+            playing_state.state
+        else {
+            error!(
+                "notify_missed_events_added_to_grabber should not be called if the player is not waiting for missed events to be added to grabber"
+            );
+            return;
+        };
+
+        let Some(yield_context) = playing_state.yield_context.take() else {
+            error!(
+                "notify_missed_events_added_to_grabber should not be called without yield context"
+            );
+            return;
+        };
+
+        set_focused_window_by_title(yield_context.previous_window_title);
+
+        for missed_event in
+            playing_state.filtered_missed_events(yield_context.start_time, yield_end_time)
+        {
+            rdev::simulate(&missed_event).unwrap();
+            Timer::after(Duration::from_millis(20)).await;
         }
+
+        playing_state.missed_events = playing_state
+            .missed_events
+            .iter()
+            .rev()
+            .take_while(|missed_event| missed_event.time > yield_end_time)
+            .cloned()
+            .collect();
+
+        playing_state.state = PlayingState::Running;
     }
 }
 
@@ -169,30 +312,31 @@ pub fn subscription() -> impl Stream<Item = Message> {
         output.send(Message::SenderReady(command_tx)).await.unwrap();
 
         loop {
-            match player.state {
-                PlayerState::Playing(PlayingState { .. }) => {
-                    if let Ok(Some(command)) = command_rx.try_next() {
-                        match command {
-                            Command::StartPlaybackWith(events, listener_sender) => {
-                                player.start_playback(events, listener_sender);
-                            }
-                            Command::StopPlayback => player.stop_playback(),
-                            Command::StoreMissedEvent(event) => player.store_missed_event(event),
-                        }
+            let command = if matches!(player.state, PlayerState::Playing(Playing { .. })) {
+                command_rx.try_next()
+            } else {
+                Ok(command_rx.next().await)
+            };
+            if let Ok(Some(command)) = command {
+                trace!("Player command: {command:#?}");
+                match command {
+                    Command::InitializePlayback(events, sender) => {
+                        player.initialize_playback(events, sender)
                     }
-                    let message = player.perform_playback().await;
-                    output.send(message).await.unwrap();
+                    Command::NotifyGrabReady => player.notify_grab_ready(output.clone()),
+                    Command::StoreMissedEvent(missed_event) => {
+                        player.store_missed_event(missed_event)
+                    }
+                    Command::NotifyMissedEventsAddedToGrabber => {
+                        player.notify_missed_events_added_to_grabber().await;
+                    }
+                    Command::StopPlayback => {
+                        player.stop_playback();
+                        output.send(Message::PlaybackDone).await.unwrap();
+                    }
                 }
-                PlayerState::Idle => match command_rx.next().await.unwrap() {
-                    Command::StartPlaybackWith(events, listener_sender) => {
-                        player.start_playback(events, listener_sender);
-                    }
-                    Command::StopPlayback => output.send(Message::PlaybackDone).await.unwrap(),
-                    Command::StoreMissedEvent(_) => {
-                        error!("Should not happen");
-                    }
-                },
             }
+            player.perform_playback(output.clone()).await;
         }
     })
 }

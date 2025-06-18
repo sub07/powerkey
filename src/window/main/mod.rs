@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    fmt::Display,
-    time::SystemTime,
-};
+use std::{collections::BTreeSet, fmt::Display, time::SystemTime};
 
 use iced::{
     Element, Length, Subscription, Task, Theme,
@@ -17,12 +13,13 @@ use iced::{
     window::Level,
 };
 use itertools::Itertools;
+use log::trace;
 use rdev::EventType;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     custom_widget::separator::separator,
-    subscription::global_event::{self, Input},
+    subscription::global_event::{self, Input, player},
     utils::{OrdPairExt, SenderOption, SubscriptionExt},
 };
 
@@ -32,6 +29,7 @@ mod mapper;
 enum PlaybackMode {
     #[default]
     Idle,
+    PlayerWaitsForGrab,
     Play,
     Record,
 }
@@ -120,11 +118,13 @@ pub struct State {
 }
 
 #[derive(Debug, Clone)]
-enum GlobalEventTrigger {
+pub enum GlobalEventTrigger {
     ListenerReady(Sender<global_event::listener::Command>),
     ListenerModeJustChanged(global_event::listener::Mode),
+    ListenerAddGrabIgnoreListDone,
 
     PlayerReady(Sender<global_event::player::Command>),
+    PlayerPlaybackJustStarted,
     PlayerPlaybackJustEnded,
     PlayerJustPlayed(usize),
 
@@ -132,7 +132,7 @@ enum GlobalEventTrigger {
 }
 
 #[derive(Debug, Clone)]
-enum Command {
+pub enum Command {
     StartRecording,
     StartPlayback,
     Stop,
@@ -141,11 +141,11 @@ enum Command {
     SetWindowId(iced::window::Id),
     UpdateModifiers(Modifiers),
     AddYieldEventAfterSelected,
-    ListCommand(ListCommand),
+    ItemList(ListCommand),
 }
 
 #[derive(Debug, Clone)]
-enum Trigger {
+pub enum Trigger {
     RecordButton,
     PlayButton,
     StopButton,
@@ -156,7 +156,7 @@ enum Trigger {
 }
 
 #[derive(Debug, Clone)]
-enum ListCommand {
+pub enum ListCommand {
     SelectItem(usize),
     SelectNext,
     SelectPrevious,
@@ -251,20 +251,21 @@ impl State {
                     .unwrap();
             }
             Command::StartPlayback => {
-                self.playback_mode = PlaybackMode::Play;
-                self.global_event_player_command_sender
-                    .try_send(global_event::player::Command::StartPlaybackWith(
-                        self.items
-                            .clone()
-                            .into_iter()
-                            .map(|event| event.0)
-                            .collect_vec(),
-                        self.global_event_listener_command_sender
-                            .as_ref()
-                            .unwrap()
-                            .clone(),
-                    ))
-                    .unwrap();
+                if let Some(listener_command_sender) =
+                    self.global_event_listener_command_sender.as_ref().cloned()
+                {
+                    self.global_event_player_command_sender
+                        .try_send(global_event::player::Command::InitializePlayback(
+                            self.items
+                                .clone()
+                                .into_iter()
+                                .map(|event| event.0)
+                                .collect_vec(),
+                            listener_command_sender,
+                        ))
+                        .unwrap();
+                    self.playback_mode = PlaybackMode::PlayerWaitsForGrab;
+                }
             }
             Command::Stop => {
                 if let PlaybackMode::Play = &self.playback_mode {}
@@ -323,7 +324,7 @@ impl State {
                 }
             }
             Command::SetWindowId(id) => self.window_id = Some(id),
-            Command::ListCommand(command) => return self.handle_list_command(command),
+            Command::ItemList(command) => return self.handle_list_command(command),
         }
         Task::none()
     }
@@ -404,6 +405,13 @@ impl State {
                 self.global_event_listener_command_sender = Some(sender);
             }
             GlobalEventTrigger::ListenerModeJustChanged(mode) => {
+                if matches!(self.playback_mode, PlaybackMode::PlayerWaitsForGrab)
+                    && matches!(mode, global_event::listener::Mode::Grab { .. })
+                {
+                    self.global_event_player_command_sender
+                        .try_send(global_event::player::Command::NotifyGrabReady)
+                        .unwrap();
+                }
                 self.current_listener_mode = mode;
             }
             GlobalEventTrigger::PlayerReady(sender) => {
@@ -416,6 +424,14 @@ impl State {
                 self.selected_items_state.select(index);
             }
             GlobalEventTrigger::Event(event) => self.handle_global_event(event),
+            GlobalEventTrigger::PlayerPlaybackJustStarted => {
+                self.playback_mode = PlaybackMode::Play;
+            }
+            GlobalEventTrigger::ListenerAddGrabIgnoreListDone => {
+                self.global_event_player_command_sender
+                    .try_send(player::Command::NotifyMissedEventsAddedToGrabber)
+                    .unwrap();
+            }
         }
         Task::none()
     }
@@ -451,6 +467,7 @@ impl State {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        trace!("Main window update: {message:?}");
         match message {
             Message::Command(command) => self.handle_command(command),
             Message::Trigger(trigger) => self.handle_trigger(trigger),
@@ -459,6 +476,7 @@ impl State {
 
     pub fn view(&self) -> Element<Message> {
         let items = column(
+            #[allow(unstable_name_collisions)]
             self.items
                 .iter()
                 .enumerate()
@@ -492,9 +510,9 @@ impl State {
                         .spacing(8.0)
                         .id(self.item_list_scroll_id.clone())
                         .on_scroll(|viewport| {
-                            Message::Command(Command::ListCommand(
-                                ListCommand::SetScrollableViewport(viewport),
-                            ))
+                            Message::Command(Command::ItemList(ListCommand::SetScrollableViewport(
+                                viewport,
+                            )))
                         }),
                 )
             },
@@ -534,7 +552,7 @@ fn list_item<'a, 'b: 'a>(
             }
         }),
     )
-    .on_press(Message::Command(Command::ListCommand(
+    .on_press(Message::Command(Command::ItemList(
         ListCommand::SelectItem(index),
     )))
     .into()
@@ -542,29 +560,30 @@ fn list_item<'a, 'b: 'a>(
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
     let global_event_listener = Subscription::run(global_event::listener::subscription).map_into();
-    let local_event_listener = iced::keyboard::on_key_press(on_key_press);
-    let local_release_event_listener = iced::event::listen_with(on_event);
     let global_event_player = Subscription::run(global_event::player::subscription).map_into();
+
+    let local_keyevent_listener = iced::keyboard::on_key_press(on_key_press);
+    let local_event_listener = iced::event::listen_with(on_event);
 
     Subscription::batch([
         global_event_listener,
+        local_keyevent_listener,
         local_event_listener,
-        local_release_event_listener,
         global_event_player,
     ])
 }
 
 fn on_key_press(key: Key, _modifiers: Modifiers) -> Option<Message> {
     match key {
-        Key::Named(Named::Delete) => Some(Message::Command(Command::ListCommand(
-            ListCommand::DeleteItem,
-        ))),
-        Key::Named(Named::ArrowUp) => Some(Message::Command(Command::ListCommand(
+        Key::Named(Named::Delete) => {
+            Some(Message::Command(Command::ItemList(ListCommand::DeleteItem)))
+        }
+        Key::Named(Named::ArrowUp) => Some(Message::Command(Command::ItemList(
             ListCommand::SelectPrevious,
         ))),
-        Key::Named(Named::ArrowDown) => Some(Message::Command(Command::ListCommand(
-            ListCommand::SelectNext,
-        ))),
+        Key::Named(Named::ArrowDown) => {
+            Some(Message::Command(Command::ItemList(ListCommand::SelectNext)))
+        }
         _ => None,
     }
 }

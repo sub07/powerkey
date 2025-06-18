@@ -15,6 +15,11 @@ impl From<subscription::global_event::listener::Message> for Message {
             subscription::global_event::listener::Message::ModeJustSet(mode) => Message::Trigger(
                 Trigger::GlobalEvent(GlobalEventTrigger::ListenerModeJustChanged(mode)),
             ),
+            subscription::global_event::listener::Message::SetNextEventsToBeIgnoredByGrabDone => {
+                Message::Trigger(Trigger::GlobalEvent(
+                    GlobalEventTrigger::ListenerAddGrabIgnoreListDone,
+                ))
+            }
         }
     }
 }
@@ -30,6 +35,9 @@ impl From<subscription::global_event::player::Message> for Message {
             ),
             subscription::global_event::player::Message::JustPlayed { index } => Message::Trigger(
                 Trigger::GlobalEvent(GlobalEventTrigger::PlayerJustPlayed(index)),
+            ),
+            subscription::global_event::player::Message::PlaybackJustStarted => Message::Trigger(
+                Trigger::GlobalEvent(GlobalEventTrigger::PlayerPlaybackJustStarted),
             ),
         }
     }
