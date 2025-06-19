@@ -234,8 +234,9 @@ impl State {
                     },
                 );
             }
+        } else {
+            log::warn!("Attempt to scroll but scrollable viewport isnt't set");
         }
-        log::warn!("Attempt to scroll but scrollable viewport isnt't set");
         Task::none()
     }
 
@@ -288,7 +289,7 @@ impl State {
 
                 self.playback_mode = PlaybackMode::Idle;
 
-                std::fs::write("macro.json", serde_json::to_string(&self.items).unwrap()).unwrap();
+                // std::fs::write("macro.json", serde_json::to_string(&self.items).unwrap()).unwrap();
             }
             Command::SetAlwaysOnTop(always_on_top) => {
                 if let Some(window_id) = self.window_id {
