@@ -312,7 +312,13 @@ pub fn subscription() -> impl Stream<Item = Message> {
         output.send(Message::SenderReady(command_tx)).await.unwrap();
 
         loop {
-            let command = if matches!(player.state, PlayerState::Playing(Playing { .. })) {
+            let command = if matches!(
+                player.state,
+                PlayerState::Playing(Playing {
+                    state: PlayingState::Running,
+                    ..
+                })
+            ) {
                 command_rx.try_next()
             } else {
                 Ok(command_rx.next().await)
