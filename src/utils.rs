@@ -26,13 +26,21 @@ impl<T> Option<iced::futures::channel::mpsc::Sender<T>> {
     }
 }
 
-pub fn get_focused_window_title() -> Result<String, std::string::FromUtf16Error> {
+pub fn get_window_title_from_hwnd(
+    window: windows::Win32::Foundation::HWND,
+) -> Result<String, std::string::FromUtf16Error> {
     unsafe {
-        let window = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
         let len = windows::Win32::UI::WindowsAndMessaging::GetWindowTextLengthA(window) + 1; // + 1 for null terminator
         let mut title = vec![0u16; len as usize];
         windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(window, title.as_mut_slice());
         windows_strings::PWSTR::from_raw(title.as_mut_ptr()).to_string()
+    }
+}
+
+pub fn get_focused_window_title() -> Result<String, std::string::FromUtf16Error> {
+    unsafe {
+        let window = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        get_window_title_from_hwnd(window)
     }
 }
 

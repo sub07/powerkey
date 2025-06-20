@@ -116,11 +116,11 @@ impl PartialEq for MissedEvent {
 impl Eq for MissedEvent {}
 
 #[derive(Debug)]
-struct Player {
+struct State {
     state: PlayerState,
 }
 
-impl Player {
+impl State {
     fn new() -> Self {
         Self {
             state: PlayerState::Idle,
@@ -307,7 +307,7 @@ impl Player {
 
 pub fn subscription() -> impl Stream<Item = Message> {
     stream::channel(100, async |mut output| {
-        let mut player = Player::new();
+        let mut player = State::new();
         let (command_tx, mut command_rx) = channel(100);
         output.send(Message::SenderReady(command_tx)).await.unwrap();
 
